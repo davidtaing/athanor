@@ -11,7 +11,7 @@ ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}-slim"
 FROM ${BUILDER_IMAGE} AS builder
 
 # Build deps for native compilation
-RUN apt-get update -y && apt-get install -y build-essential git \
+RUN apt-get update -y && apt-get install -y --no-install-recommends build-essential git \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -43,7 +43,7 @@ RUN mix release
 FROM ${RUNNER_IMAGE}
 
 RUN apt-get update -y \
-    && apt-get install -y libstdc++6 openssl libncurses5 locales ca-certificates \
+    && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses5 locales ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen

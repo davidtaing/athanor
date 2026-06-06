@@ -1,14 +1,9 @@
 defmodule AthanorWeb.HealthControllerTest do
   use AthanorWeb.ConnCase, async: true
 
-  @token "test-bearer-token"
-
-  setup do
-    prev = Application.get_env(:athanor, :api_token)
-    Application.put_env(:athanor, :api_token, @token)
-    on_exit(fn -> Application.put_env(:athanor, :api_token, prev) end)
-    :ok
-  end
+  # Configured in config/test.exs; reading it here keeps the tests in sync
+  # without mutating global application env from an async test.
+  @token Application.compile_env!(:athanor, :api_token)
 
   describe "GET /api/health" do
     test "returns 200 with the correct bearer token", %{conn: conn} do

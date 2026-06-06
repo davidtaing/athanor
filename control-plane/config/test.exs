@@ -1,6 +1,9 @@
 import Config
 config :athanor, Oban, testing: :manual
 config :athanor, token_signing_secret: "jPjvNXmKjiBTLF2mhI7iaEoXVdbbUJIk"
+
+# MVP static bearer token for tests (avoids Application.put_env in async tests).
+config :athanor, :api_token, "test-bearer-token"
 config :bcrypt_elixir, log_rounds: 1
 config :ash, policies: [show_policy_breakdowns?: true], disable_async?: true
 

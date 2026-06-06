@@ -25,17 +25,24 @@ config :athanor, AthanorWeb.Endpoint,
 
 # MVP static bearer token. Read from the environment in every environment so
 # the docker-compose stack can inject it; required (non-empty) in prod.
-if api_token = System.get_env("ATHANOR_API_TOKEN") do
+api_token = System.get_env("ATHANOR_API_TOKEN")
+
+if api_token not in [nil, ""] do
   config :athanor, :api_token, api_token
 end
 
 if config_env() == :prod do
+  # Read a required env var, rejecting empty strings ("" is truthy in Elixir,
+  # so `System.get_env(name) || raise` would let empty secrets through).
+  require_env! = fn name, hint ->
+    case System.get_env(name) do
+      value when value not in [nil, ""] -> value
+      _ -> raise "environment variable #{name} is missing or empty. #{hint}"
+    end
+  end
+
   database_url =
-    System.get_env("DATABASE_URL") ||
-      raise """
-      environment variable DATABASE_URL is missing.
-      For example: ecto://USER:PASS@HOST/DATABASE
-      """
+    require_env!.("DATABASE_URL", "For example: ecto://USER:PASS@HOST/DATABASE")
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
@@ -53,11 +60,7 @@ if config_env() == :prod do
   # to check this value into version control, so we use an environment
   # variable instead.
   secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
+    require_env!.("SECRET_KEY_BASE", "You can generate one by calling: mix phx.gen.secret")
 
   host = System.get_env("PHX_HOST") || "example.com"
 
@@ -75,14 +78,10 @@ if config_env() == :prod do
     secret_key_base: secret_key_base
 
   config :athanor,
-    token_signing_secret:
-      System.get_env("TOKEN_SIGNING_SECRET") ||
-        raise("Missing environment variable `TOKEN_SIGNING_SECRET`!")
+    token_signing_secret: require_env!.("TOKEN_SIGNING_SECRET", "")
 
   config :athanor,
-    api_token:
-      System.get_env("ATHANOR_API_TOKEN") ||
-        raise("Missing environment variable `ATHANOR_API_TOKEN`!")
+    api_token: require_env!.("ATHANOR_API_TOKEN", "")
 
   # ## SSL Support
   #

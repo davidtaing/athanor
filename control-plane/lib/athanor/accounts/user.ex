@@ -229,7 +229,7 @@ defmodule Athanor.Accounts.User do
     end
 
     read :sign_in_with_api_key do
-      argument :api_key, :string, allow_nil?: false
+      argument :api_key, :string, allow_nil?: false, sensitive?: true
       prepare AshAuthentication.Strategy.ApiKey.SignInPreparation
     end
   end
