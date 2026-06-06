@@ -65,7 +65,7 @@ config :spark,
 config :athanor,
   ecto_repos: [Athanor.Repo],
   generators: [timestamp_type: :utc_datetime],
-  ash_domains: [Athanor.Accounts]
+  ash_domains: [Athanor.Accounts, Athanor.Pipelines]
 
 # MVP static bearer token for the API (see CLAUDE.md cut-line).
 # Overridden per-environment; in prod it is required from ATHANOR_API_TOKEN.
