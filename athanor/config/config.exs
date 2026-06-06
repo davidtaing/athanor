@@ -20,7 +20,7 @@ config :athanor, AthanorWeb.Endpoint,
     layout: false
   ],
   pubsub_server: Athanor.PubSub,
-  live_view: [signing_salt: "V2PW0JdY"]
+  live_view: [signing_salt: "YX7E7N8a"]
 
 # Configure the mailer
 #

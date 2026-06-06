@@ -23,7 +23,7 @@ config :athanor, AthanorWeb.Endpoint,
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
-  secret_key_base: "VLWcMftH8Um2Ns4T3HM2wzfZaug7Wn8DrXTpG24OL6aW+VKA6zw0BRU/EW2RK/I0",
+  secret_key_base: "Ow8Yo7vNaS6fSXi/NECLOYPdrGXLrgBEEF8jcXX+cAxDEMKUwORdh8k/vXVw8dt7",
   watchers: [
     esbuild: {Esbuild, :install_and_run, [:athanor, ~w(--sourcemap=inline --watch)]},
     tailwind: {Tailwind, :install_and_run, [:athanor, ~w(--watch)]}

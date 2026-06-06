@@ -17,7 +17,7 @@ config :athanor, Athanor.Repo,
 # you can enable the server option below.
 config :athanor, AthanorWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
-  secret_key_base: "Xscto3B3OOBy0TxrBx2J2y/27R9sW4NeR5DGPFK4l2dnP5aAoJMdY20cWObfGfyA",
+  secret_key_base: "+ejS1lmpRxB4qLTgalk4jrL7uAm54oXLMOTGgwKMiQPaHbfUCr8Be3zGWZN6dS6R",
   server: false
 
 # In test we don't send emails

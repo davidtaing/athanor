@@ -7,7 +7,7 @@ defmodule AthanorWeb.Endpoint do
   @session_options [
     store: :cookie,
     key: "_athanor_key",
-    signing_salt: "f7fhoINw",
+    signing_salt: "aAUK/Fht",
     same_site: "Lax"
   ]
 
