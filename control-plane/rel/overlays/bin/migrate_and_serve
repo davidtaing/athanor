@@ -1,0 +1,10 @@
+#!/bin/sh
+# Create the database if needed, run pending migrations, then start the
+# Phoenix server. Used as the container entrypoint so the stack is
+# self-bootstrapping on a fresh machine.
+set -eu
+
+cd -P -- "$(dirname -- "$0")"
+
+./athanor eval 'Athanor.Release.setup()'
+PHX_SERVER=true exec ./athanor start
