@@ -17,6 +17,15 @@ maintains constant, self-feeding heat.
   **Firecracker microVM**. Exploring Firecracker is the primary motivation
   for the project.
 
+## Repo layout
+
+- `control-plane/` — the Elixir OTP app (API, scheduler, job state).
+- `runner/` — the Go runner (`athanor-runner`).
+- `docs/` — design docs (ADRs, PRD, guides).
+
+All Elixir work happens inside `control-plane/`, all Go work inside
+`runner/`. Top-level files (compose, CI) live at the repo root.
+
 ## Naming conventions
 
 - Repo: `athanor`
