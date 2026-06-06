@@ -7,6 +7,14 @@ config :athanor, :api_token, "test-bearer-token"
 config :bcrypt_elixir, log_rounds: 1
 config :ash, policies: [show_policy_breakdowns?: true], disable_async?: true
 
+# Parallel worktrees get their own test database (see docs/WORKTREES.md);
+# the main checkout keeps the unsuffixed default.
+worktree_suffix =
+  case System.get_env("ATHANOR_WORKTREE", "main") do
+    "main" -> ""
+    name -> "_#{name}"
+  end
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
@@ -16,7 +24,7 @@ config :athanor, Athanor.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "athanor_test#{System.get_env("MIX_TEST_PARTITION")}",
+  database: "athanor_test#{worktree_suffix}#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
