@@ -38,6 +38,10 @@ defmodule AthanorWeb.Router do
     pipe_through :bearer_token
 
     get "/health", HealthController, :show
+
+    post "/pipelines", PipelineController, :create
+    get "/pipelines/:id", PipelineController, :show
+    get "/jobs/:id", JobController, :show
   end
 
   scope "/", AthanorWeb do
