@@ -1,0 +1,18 @@
+# Build artifacts and deps are rebuilt inside the image
+_build/
+deps/
+.elixir_ls/
+
+# Node / asset tooling artifacts
+assets/node_modules/
+
+# Local secrets and env
+.env
+*.env
+
+# Generated static assets (rebuilt by mix assets.deploy)
+priv/static/assets/
+
+# VCS / editor
+.git/
+.gitignore

@@ -5,6 +5,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: athanor
     ports:
       - "5432:5432"
     volumes:
@@ -15,5 +16,49 @@ services:
       timeout: 5s
       retries: 5
 
+  # Object storage for Job logs (see docs/adr/0004). The control plane never
+  # stores log content in Postgres; chunks land here behind the LogStore.
+  minio:
+    image: minio/minio:latest
+    container_name: athanor-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  control-plane:
+    build:
+      context: ./control-plane
+    container_name: athanor-control-plane
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ecto://postgres:postgres@postgres/athanor
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-Ow8Yo7vNaS6fSXi_NECLOYPdrGXLrgBEEF8jcXX_cAxDEMKUwORdh8k_vXVw8dt7Ow8Yo}
+      TOKEN_SIGNING_SECRET: ${TOKEN_SIGNING_SECRET:-local-token-signing-secret}
+      ATHANOR_API_TOKEN: ${ATHANOR_API_TOKEN:-local-dev-token}
+      PHX_HOST: ${PHX_HOST:-localhost}
+      PORT: "4000"
+      # minio / S3 (consumed by the LogStore backend, ADR 0004)
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "4000:4000"
+
 volumes:
   postgres_data:
+  minio_data:
