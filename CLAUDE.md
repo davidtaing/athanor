@@ -33,6 +33,8 @@ Default to Elixir; Go is for the runner only.
 - `CONTEXT.md` — canonical domain glossary (Pipeline, Job, Runner,
   Provisioner, job lifecycle states). Use these terms exactly.
 - `docs/adr/` — architecture decision records.
+- `docs/WORKTREES.md` — git worktree setup for parallel Claude Code
+  sessions (incl. future per-worktree Phoenix port/database plan).
 - Still to write: system overview, supervision tree, and the full
   Elixir↔Go runner protocol spec (registration, job dispatch, log
   streaming, heartbeats).
