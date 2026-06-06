@@ -1,12 +1,21 @@
 import Config
 config :ash, policies: [show_policy_breakdowns?: true]
 
+# Parallel worktrees each get their own port and dev database, derived from
+# ATHANOR_WORKTREE / PORT set by bin/worktree-env (see docs/WORKTREES.md).
+# The main checkout keeps the unsuffixed defaults.
+worktree_suffix =
+  case System.get_env("ATHANOR_WORKTREE", "main") do
+    "main" -> ""
+    name -> "_#{name}"
+  end
+
 # Configure your database
 config :athanor, Athanor.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "athanor_dev",
+  database: "athanor_dev#{worktree_suffix}",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -20,7 +29,7 @@ config :athanor, Athanor.Repo,
 config :athanor, AthanorWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}],
+  http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT", "4000"))],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
@@ -70,6 +79,16 @@ config :athanor, AthanorWeb.Endpoint,
 
 # Enable dev routes for dashboard and mailbox
 config :athanor, dev_routes: true, token_signing_secret: "07Oyd5taGSHLNEvwFa8ikXUCxqOyugd/"
+
+# LiveDebugger runs its own endpoint; each worktree gets a distinct port
+# (set by bin/worktree-env, default 4007). auto_port scans upward as a
+# fallback if the port is somehow taken.
+config :live_debugger,
+  port: String.to_integer(System.get_env("LIVE_DEBUGGER_PORT", "4007")),
+  auto_port: true
+
+# MVP static bearer token for local development.
+config :athanor, :api_token, "dev-token"
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"

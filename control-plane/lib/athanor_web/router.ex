@@ -28,6 +28,18 @@ defmodule AthanorWeb.Router do
     plug :set_actor, :user
   end
 
+  # MVP auth: a single static bearer token (see CLAUDE.md cut-line).
+  pipeline :bearer_token do
+    plug :accepts, ["json"]
+    plug AthanorWeb.Plugs.BearerTokenAuth
+  end
+
+  scope "/api", AthanorWeb do
+    pipe_through :bearer_token
+
+    get "/health", HealthController, :show
+  end
+
   scope "/", AthanorWeb do
     pipe_through :browser
 

@@ -23,6 +23,12 @@ end
 config :athanor, AthanorWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# MVP static bearer token. Read from the environment in every environment so
+# the docker-compose stack can inject it; required (non-empty) in prod.
+if api_token = System.get_env("ATHANOR_API_TOKEN") do
+  config :athanor, :api_token, api_token
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
@@ -72,6 +78,11 @@ if config_env() == :prod do
     token_signing_secret:
       System.get_env("TOKEN_SIGNING_SECRET") ||
         raise("Missing environment variable `TOKEN_SIGNING_SECRET`!")
+
+  config :athanor,
+    api_token:
+      System.get_env("ATHANOR_API_TOKEN") ||
+        raise("Missing environment variable `ATHANOR_API_TOKEN`!")
 
   # ## SSL Support
   #

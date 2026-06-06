@@ -67,6 +67,10 @@ config :athanor,
   generators: [timestamp_type: :utc_datetime],
   ash_domains: [Athanor.Accounts]
 
+# MVP static bearer token for the API (see CLAUDE.md cut-line).
+# Overridden per-environment; in prod it is required from ATHANOR_API_TOKEN.
+config :athanor, :api_token, nil
+
 # Configure the endpoint
 config :athanor, AthanorWeb.Endpoint,
   url: [host: "localhost"],
