@@ -18,8 +18,8 @@ catalog in issue #4; #4 implements the catalog below (the v0 messages are a
 strict subset). Sections marked **reserved** are designed-for but not built
 in the MVP — implementers must not foreclose them, and must not build them.
 
-Terms follow `CONTEXT.md` exactly: Runner, Job, Step, Boot Token, Session
-Token, and the seven-state Job lifecycle. ADRs 0001–0004 are binding.
+Terms follow `CONTEXT.md` exactly: Runner, Job, Step, Definition, Boot Token,
+Session Token, and the seven-state Job lifecycle. ADRs 0001–0004 are binding.
 
 ## Protocol invariants
 
@@ -35,13 +35,28 @@ Token, and the seven-state Job lifecycle. ADRs 0001–0004 are binding.
    rejoin is a no-op if execution already started.
 4. **Liveness is observed, not reported.** There is no application-level
    heartbeat message (see Liveness).
+5. **Wire direction fixes who may reply.** Every Runner→control-plane message
+   is a client push and uses the Channels native reply mechanism (a server
+   ack). Every control-plane→Runner message is a server push and *never*
+   expects a wire reply — the Channels wire cannot deliver one. Where a
+   CP→Runner push needs acknowledgement, that acknowledgement is a separate
+   Runner-sent message (e.g. `job:assign` is acked by `job:ack`); where it
+   does not, the control plane relies on a deadline instead (`job:cancel`'s
+   drain deadline). Implementers must never design against a reply mechanism
+   the wire does not have.
 
 ## Identity and credentials
 
 - **Boot Token** (see `CONTEXT.md`): created with the Runner record before
   boot, injected into the container, presented exactly once at first join,
   burned on use. Rejected on reuse, expiry, or unknown token. Proves "the
-  Provisioner booted me", nothing more.
+  Provisioner booted me", nothing more. Its **TTL is derived, not configured**:
+  computed at token creation as **boot timeout + one sweep interval** (90 s at
+  defaults), so a legitimate first join succeeds any time the sweep would
+  still accept it. The TTL is never an independent config knob — it tracks the
+  boot timeout automatically, so raising one value cannot strand the other.
+  Late joins past the window remain rejected by Runner record state regardless
+  of TTL.
 - **Session Token** (see `CONTEXT.md`): issued in the first join's reply.
   Authenticates rejoin. Valid until the Runner's Job reaches a terminal
   state — no independent TTL; the Runner record dies with the Job and
@@ -51,6 +66,21 @@ Token, and the seven-state Job lifecycle. ADRs 0001–0004 are binding.
 A leaked Boot Token is worthless after boot; a Session Token never touches
 anything inspectable from outside the Runner.
 
+## Steps and env on the wire
+
+A **Step** is an object — `{command: string (required), name: string
+(optional)}` — at every layer it crosses: the **Definition** (see
+`CONTEXT.md`), Postgres storage, and the `job:assign` payload. The shape is
+identical at all three; there is no translation layer. `name` is for display
+and **falls back to `command`** when absent, so naming stays optional and terse
+Definitions remain valid. No other keys are permitted — per-Step env, shell,
+workdir, and timeout remain **reserved** (designed-against, not built).
+
+A Job's **`env`** is a **flat map of string keys to string values**. Both Step
+objects and `env` are validated at **Definition submission**: a malformed Step
+(missing `command`, unknown keys) or a non-flat / non-string `env` is rejected
+at the API, before any Runner is booted — never inside a booted Runner.
+
 ## Join and rejoin
 
 Channel topic: **`runner:v1:{runner_id}`** (see Versioning).
@@ -59,16 +89,31 @@ Channel topic: **`runner:v1:{runner_id}`** (see Versioning).
   carries `{protocol_version, session_token, verdict: "continue"}`.
 - **Rejoin**: params `{session_token}`. The reply is a state resync:
   `{protocol_version, verdict: "continue" | "stop"}`.
-  - `continue` — proceed. If the Job is still `assigned` and was never
-    acknowledged, the control plane re-sends `job:assign` (invariant 3 makes
-    this safe).
+  - `continue` — proceed. If the Job is still `assigned` and the Runner never
+    acknowledged delivery (the `job:ack` timestamp is unstamped), the control
+    plane re-sends `job:assign` (invariant 3 makes this safe). The stamp is
+    the only fact the re-send rule reads: assigned + unstamped ⇒ re-send.
   - `stop` — the Job went terminal (canceled, timed out) while the Runner was
     away. The Runner executes the same path as `job:cancel`: stop Steps,
     drain logs, exit. Cancel-during-blip degrades to cancel-at-rejoin; the
     grace period bounds the staleness.
-- **Rejected joins**: burned/expired/unknown Boot Token, Session Token for a
-  terminal Job, or unknown topic version. A *definitively rejected* join
-  fails fast — the Runner exits nonzero immediately rather than retrying.
+- **Rejected joins** carry exactly two codes on the wire, partitioned by
+  Runner behavior:
+  - `invalid_credentials` — **fatal.** The join can never succeed: burned,
+    expired, or unknown Boot Token; a Session Token for a terminal Job;
+    missing params; or an unknown topic version. The Runner exits nonzero
+    immediately rather than retrying.
+  - `try_again` — **transient.** The join is otherwise well-formed but a
+    control-plane-internal fault (e.g. a database blip) prevented evaluating
+    it. The Runner retries with a fixed short backoff — no negotiated
+    retry-after — bounded by the control plane's boot timeout, which caps the
+    total damage. A transient fault must never be laundered into
+    `invalid_credentials`, so a blip cannot burn a boot attempt as a fatal
+    credential rejection.
+
+  The specific cause behind either code is logged server-side only; the wire
+  code stays coarse so token-validity details never leak to an unauthenticated
+  caller.
 
 ## Liveness — no heartbeat message
 
@@ -109,6 +154,14 @@ Delivery is **at-least-once, sequenced, acknowledged**:
 - Every chunk carries a **per-Job monotonic sequence number**, assigned by
   the Runner. (ADR 0004's chunk-object naming `jobs/41/logs/000001` already
   implies this; the protocol makes it explicit.)
+- The control plane is a **liberal `seq` receiver**: the Channel accepts any
+  `seq`, hands the chunk to the LogStore, and acks — it keeps no per-Job seq
+  tracking in the channel process (processes stamp facts, they don't hold
+  truth, per ADR 0002). The streaming hot path never blocks on receiver-side
+  validation. Log integrity — that the surviving chunks form a contiguous
+  `1..N` — is verified **once, at seal time** (ADR 0004's seal step), where a
+  gap or regression in numbering surfaces as a loud integrity error on a
+  terminal Job rather than a streaming stall.
 - Chunks are Channel pushes **with replies**. The control plane replies
   (acks) only after handing the chunk to the LogStore. Unacked chunks stay
   in Runner memory and are **resent after rejoin**.
@@ -162,7 +215,8 @@ On receipt the Runner: SIGTERMs the running Step's process group (SIGKILL a
 beat later), **flushes remaining unacked chunks** (the tail of a canceled
 Job's log is usually the part that explains the cancel), then exits.
 
-**No acknowledgement message.** The Job is already terminal — the state
+**No acknowledgement message** (invariant 5: a CP→Runner push expects no wire
+reply, and here none is needed). The Job is already terminal — the state
 transition happened transactionally at the API call (ADR 0002), before the
 push. The control plane's protection is the **cancel-drain deadline**
 (config, default 10 s), after which the Provisioner force-destroys the
@@ -182,8 +236,9 @@ topic scheme survives a framing change.
   rejected at join — before any message exchange.
 - The join reply **echoes `protocol_version`** so a mismatched runner fails
   fast and loudly in its container logs instead of dying mutely.
-- Mismatch outcome: rejected join ⇒ Runner exits nonzero ⇒ Job fails with
-  the existing **`boot_failure`** reason. No new state, no new failure reason.
+- Mismatch outcome: a fatal (`invalid_credentials`) rejected join ⇒ Runner
+  exits nonzero ⇒ Job fails with the existing **`boot_failure`** reason. No new
+  state, no new failure reason.
 - **Reserved**: negotiation logic (version ranges, capability flags). The
   MVP ships exactly one channel module, `runner:v1`.
 
@@ -191,10 +246,11 @@ topic scheme survives a framing change.
 
 | Message | Direction | Payload | Reply | Notes |
 |---|---|---|---|---|
-| join | R → CP | `{boot_token}` or `{session_token}` | `{protocol_version, session_token?, verdict}` | `session_token` on first join only; `verdict` is `continue`/`stop` |
-| `job:assign` | CP → R | job id, git URL + ref, ordered Steps, env, log batching config (`max_bytes`, `max_interval`) | ack | Idempotent on Runner; re-sent after rejoin if still unacked. No image (Runner is already inside it), no timeout (control-plane enforced) |
+| join | R → CP | `{boot_token}` or `{session_token}` | `{protocol_version, session_token?, verdict}` | `session_token` on first join only; `verdict` is `continue`/`stop`. A rejected join replies with code `invalid_credentials` (fatal) or `try_again` (transient) |
+| `job:assign` | CP → R | job id, git URL + ref, ordered Steps (objects `{command, name?}`), `env` (flat string→string map), log batching config (`max_bytes`, `max_interval`) | — | Server push: no wire reply (invariant 5). Delivery ack is `job:ack`. Idempotent on Runner; re-sent after rejoin if still assigned + unstamped. No image (Runner is already inside it), no timeout (control-plane enforced) |
+| `job:ack` | R → CP | `{}` | ack | Sent on receipt of `job:assign`; the control plane stamps an acknowledgement timestamp on the Job, which the rejoin re-send rule reads. Duplicate = ack-and-ignore |
 | `job:started` | R → CP | `{}` | ack | Drives assigned → running; duplicate = ack-and-ignore |
-| `log:chunk` | R → CP | `{seq, step_index, content}` | ack (after LogStore handoff) | At-least-once; resent after rejoin until acked |
+| `log:chunk` | R → CP | `{seq, step_index, content}` | ack (after LogStore handoff) | At-least-once; resent after rejoin until acked. Liberal receiver: any `seq` accepted and acked; contiguity verified at seal time only |
 | `job:finished` | R → CP | `{exit_code, failed_step_index?}` | ack | Facts only — no verdict field; the CP derives it (exit 0 ⇒ succeeded; nonzero ⇒ failed, reason `nonzero_exit`). Sent only after all chunks acked; duplicate = ack-and-ignore. Runner exits after the ack |
 | `job:cancel` | CP → R | `{}` | — | Shared by user cancel / pipeline cancel / timeout; ≡ rejoin `stop`; no ack — drain deadline + force-destroy instead |
 
@@ -216,17 +272,29 @@ topic scheme survives a framing change.
 Protocol paths land on the seams the MVP PRD already declares:
 
 - **Runner Channel seam** (scripted fake runner, real Channel): first join
-  burns the Boot Token; reuse rejected; rejoin with Session Token resyncs
-  `continue`/`stop`; rejoin after cancel gets `stop`; `job:assign` re-sent
-  when assigned-unacked; duplicate `job:started`/`job:finished` ack-and-
-  ignored; chunk resend after rejoin dedups by seq; `job:finished` before
-  all acks is a protocol violation the fake can assert never happens;
-  Session Token rejected after terminal.
+  burns the Boot Token; reuse rejected with `invalid_credentials`; an injected
+  transient internal fault rejects with `try_again`, never
+  `invalid_credentials`; a join at the TTL boundary (boot timeout + sweep
+  interval − ε) succeeds, past it rejected; rejoin with Session Token resyncs
+  `continue`/`stop`; rejoin after cancel gets `stop`; `job:ack` stamps the
+  acknowledgement timestamp and a duplicate `job:ack` is ack-and-ignored;
+  `job:assign` re-sent when assigned + unstamped; duplicate
+  `job:started`/`job:finished` ack-and-ignored; an out-of-contract `seq` is
+  still accepted and acked (receiver liberality is observable); chunk resend
+  after rejoin dedups by seq; `job:finished` before all acks is a protocol
+  violation the fake can assert never happens; Session Token rejected after
+  terminal.
+- **Pipeline Definition seam** (the create-action validation tests): Step
+  objects validated (`command` required, `name` optional, unknown keys
+  rejected); `env` rejected unless a flat string→string map — both surface
+  at the API, before any Runner boots.
 - **Go runner against a fake control-plane WebSocket** (Channels protocol):
   buffer-full blocks the executor; SIGTERM→SIGKILL ordering; drain-then-exit
   on cancel; fail-fast on rejected join with version echo logged.
-- **LogStore seam**: chunk-name-as-seq idempotency (write same seq twice =
-  one object).
+- **LogStore / seal seam** (lands with the logs slice, issue #8):
+  chunk-name-as-seq idempotency (write same seq twice = one object); the
+  seal-time contiguity check is the only seq enforcement — a gap or regression
+  raises a loud integrity error on the terminal Job.
 
 ## Out of Scope
 
