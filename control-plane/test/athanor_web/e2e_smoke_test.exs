@@ -31,11 +31,15 @@ defmodule AthanorWeb.E2ESmokeTest do
   @token Application.compile_env!(:athanor, :api_token)
   @runner_image "athanor-runner:latest"
 
-  # A tiny, stable public repo the runner clones (issue #7). Its master branch
-  # contains a `README` file holding exactly "Hello World!", which a Step asserts
-  # against to prove Steps run from the checked-out code at the right ref.
+  # A tiny, stable public repo the runner clones (issue #7). We deliberately
+  # clone its long-stable, NON-default `test` branch rather than `master`: the
+  # `test` branch carries a `CONTRIBUTING.md` file that `master` does NOT have,
+  # while both branches share an identical `README`. Asserting on the
+  # branch-exclusive file proves the runner honoured `git_ref` — had it ignored
+  # the ref and cloned the default branch, `CONTRIBUTING.md` would be absent and
+  # the Step would fail.
   @public_repo "https://github.com/octocat/Hello-World.git"
-  @public_repo_ref "master"
+  @public_repo_ref "test"
 
   setup_all do
     # The default test endpoint runs with server: false. The E2E needs real
@@ -105,15 +109,16 @@ defmodule AthanorWeb.E2ESmokeTest do
 
   test "an API-created Pipeline runs its Steps against the checked-out repo at the right ref",
        %{conn: conn} do
-    # The repo is cloned before Steps run; this Step asserts the checkout is
-    # present (the README the master branch carries) and exits nonzero if not,
-    # so success means "Steps ran from the checked-out code at the right ref"
-    # (issue #7 acceptance criterion).
+    # The repo is cloned before Steps run at the NON-default `test` ref. This
+    # Step asserts on `CONTRIBUTING.md`, a file that exists ONLY on the `test`
+    # branch and not on the default `master` branch, and exits nonzero if it is
+    # absent. Success therefore proves the runner honoured `git_ref` rather than
+    # silently cloning the default branch (issue #7 acceptance criterion).
     job_id =
       create_pipeline_job(conn, %{
         "name" => "build",
         "steps" => [
-          %{"command" => "grep -q 'Hello World' README"},
+          %{"command" => "grep -q 'Contributing' CONTRIBUTING.md"},
           %{"command" => "echo built"}
         ]
       })
@@ -228,12 +233,24 @@ defmodule AthanorWeb.E2ESmokeTest do
     end
   end
 
-  defp managed_container_ids do
+  # Query the managed containers, distinguishing a successful "none left" from a
+  # Docker API error. A transient socket failure must NOT read as an empty list
+  # (a false-green teardown), so retry briefly and `flunk` if the error
+  # persists rather than conflating it with successful cleanup.
+  defp managed_container_ids(attempts \\ 5) do
     filters = Jason.encode!(%{"label" => ["athanor.managed=true"]})
 
     case Req.get(docker_req(url: "/containers/json", params: [all: true, filters: filters])) do
-      {:ok, %{status: 200, body: containers}} -> for %{"Id" => id} <- containers, do: id
-      _ -> []
+      {:ok, %{status: 200, body: containers}} ->
+        for %{"Id" => id} <- containers, do: id
+
+      error when attempts > 1 ->
+        Logger.warning("e2e querying managed containers failed, retrying: #{inspect(error)}")
+        :timer.sleep(200)
+        managed_container_ids(attempts - 1)
+
+      error ->
+        flunk("e2e could not list managed containers from Docker: #{inspect(error)}")
     end
   end
 

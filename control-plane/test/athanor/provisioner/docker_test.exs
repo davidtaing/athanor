@@ -118,12 +118,28 @@ defmodule Athanor.Provisioner.DockerTest do
     end
   end
 
-  defp managed_container_ids do
+  # Query the managed containers, distinguishing a successful "none left" from a
+  # Docker API error. A transient socket failure must NOT read as an empty list
+  # (a false-green that would make a leak assertion pass spuriously), so retry
+  # briefly and `flunk` if the error persists rather than conflating it with
+  # successful cleanup.
+  defp managed_container_ids(attempts \\ 5) do
     filters = Jason.encode!(%{"label" => ["athanor.managed=true"]})
 
     case Req.get(docker_req(url: "/containers/json", params: [all: true, filters: filters])) do
-      {:ok, %{status: 200, body: containers}} -> for %{"Id" => id} <- containers, do: id
-      _ -> []
+      {:ok, %{status: 200, body: containers}} ->
+        for %{"Id" => id} <- containers, do: id
+
+      error when attempts > 1 ->
+        Logger.warning(
+          "docker test querying managed containers failed, retrying: #{inspect(error)}"
+        )
+
+        :timer.sleep(200)
+        managed_container_ids(attempts - 1)
+
+      error ->
+        flunk("docker test could not list managed containers from Docker: #{inspect(error)}")
     end
   end
 
