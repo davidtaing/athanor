@@ -44,11 +44,12 @@ jobs:
               - '.tool-versions'
               - '.github/workflows/ci.yml'
 
-  # Elixir control-plane checks. The job name `elixir` is a required check on
-  # `main`; keep it stable. Runs only when control-plane (or its version pin /
-  # this workflow) changed, but always present so it can be required.
+  # Elixir control-plane checks. The job name `elixir (control-plane)` is a
+  # required check on `main`; keep it stable. Runs only when control-plane (or
+  # its version pin / this workflow) changed, but always present so it can be
+  # required.
   elixir:
-    name: elixir
+    name: elixir (control-plane)
     needs: changes
     if: needs.changes.outputs.control-plane == 'true'
     runs-on: ubuntu-latest
@@ -111,12 +112,13 @@ jobs:
       - name: Test (warnings as errors)
         run: mix test --warnings-as-errors
 
-  # Go runner checks. The job name `go` is a required check on `main`; keep it
-  # stable. Runs only when the runner (or its version pin / this workflow)
-  # changed, but always present so it can be required. The Go version comes
-  # solely from runner/go.mod — no version numbers hardcoded here.
+  # Go runner checks. The job name `go (runner)` is a required check on
+  # `main`; keep it stable. Runs only when the runner (or its version pin /
+  # this workflow) changed, but always present so it can be required. The Go
+  # version comes solely from runner/go.mod — no version numbers hardcoded
+  # here.
   go:
-    name: go
+    name: go (runner)
     needs: changes
     if: needs.changes.outputs.runner == 'true'
     runs-on: ubuntu-latest
@@ -154,7 +156,7 @@ jobs:
   # tag-gated (`v*`) and deferred until there's a first artifact consumer;
   # no release workflow exists yet.
   docker-build:
-    name: docker-build
+    name: docker-build (control-plane)
     needs: changes
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.control-plane == 'true'
     runs-on: ubuntu-latest
