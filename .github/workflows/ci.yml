@@ -34,6 +34,8 @@ jobs:
               - '.github/workflows/ci.yml'
             runner:
               - 'runner/**'
+              - '.tool-versions'
+              - '.github/workflows/ci.yml'
 
   # Elixir control-plane checks. The job name `elixir` is a required check on
   # `main`; keep it stable. Runs only when control-plane (or its version pin /
@@ -99,6 +101,41 @@ jobs:
 
       - name: Test (warnings as errors)
         run: mix test --warnings-as-errors
+
+  # Go runner checks. The job name `go` is a required check on `main`; keep it
+  # stable. Runs only when the runner (or its version pin / this workflow)
+  # changed, but always present so it can be required. The Go version comes
+  # solely from runner/go.mod — no version numbers hardcoded here.
+  go:
+    name: go
+    needs: changes
+    if: needs.changes.outputs.runner == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: runner/go.mod
+          # No third-party deps yet, so go.sum doesn't exist. Point the cache
+          # at go.mod so setup-go's caching doesn't fail on a missing go.sum.
+          cache-dependency-path: runner/go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          working-directory: runner
 
   # Build-only Docker image for the control plane to catch Dockerfile rot.
   # Runs only on pushes to main that touch control-plane. push: false — we
