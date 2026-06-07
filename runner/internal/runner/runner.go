@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/davidtaing/athanor/runner/internal/executor"
@@ -310,11 +311,14 @@ func (r *Runner) runJob(ctx context.Context, assign assignPayload, streamer *log
 	if cloneRes.Output != "" {
 		// Surface git's output in the Job log exactly like Step output, streamed
 		// under step_index 0 — the clone is the Job's first observable work,
-		// ahead of any Step (PRD log-streaming).
-		fmt.Fprint(streamer.StepWriter(0), cloneRes.Output)
+		// ahead of any Step (PRD log-streaming). A write-to-stream failure must
+		// not mask the clone-failure path below, so log and continue.
+		if _, err := fmt.Fprint(streamer.StepWriter(0), cloneRes.Output); err != nil {
+			r.log.Warn("failed to stream clone output", "err", err)
+		}
 	}
 	if cloneRes.Err != nil {
-		r.log.Error("clone failed", "git_url", redactURL(assign.GitURL), "git_ref", assign.GitRef, "err", cloneRes.Err)
+		r.log.Error("clone failed", "git_url", redactURL(assign.GitURL), "git_ref", assign.GitRef, "err", redactErr(cloneRes.Err))
 		// A failed clone fails the Job: a nonzero exit with no Step run. The Job
 		// failed before its Steps, so there is no failing Step index.
 		return executor.Result{ExitCode: 1}, nil
@@ -362,4 +366,21 @@ func redactURL(raw string) string {
 	}
 	u.User = nil
 	return u.String()
+}
+
+// urlWithUserinfo matches a scheme://userinfo@host... substring — the only URL
+// shape that can carry an embedded credential. The userinfo (everything up to
+// the @) is what we must scrub; the host/path that follows is harmless.
+var urlWithUserinfo = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.\-]*://[^/\s@]+@[^\s]*`)
+
+// redactErr scrubs credentials from an error string before it is logged. Git
+// error messages routinely echo the remote URL, which on the clone path can
+// embed a token in the userinfo slot (e.g. https://x-access-token:TOKEN@host).
+// Any userinfo-bearing URL substring is rewritten through redactURL so the same
+// credential-hygiene guarantee as redactURL covers free-form error text.
+func redactErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return urlWithUserinfo.ReplaceAllStringFunc(err.Error(), redactURL)
 }

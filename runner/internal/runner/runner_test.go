@@ -493,6 +493,52 @@ func encodeFrame(t *testing.T, f v2Frame) []byte {
 	return raw
 }
 
+func TestRedactErrScrubsCredentials(t *testing.T) {
+	cases := []struct {
+		name string
+		in   error
+		want string
+	}{
+		{
+			name: "nil error",
+			in:   nil,
+			want: "",
+		},
+		{
+			name: "token in userinfo is scrubbed, message preserved",
+			in:   errors.New("fatal: could not read from https://x-access-token:ghp_secret@github.com/o/r.git"),
+			want: "fatal: could not read from https://github.com/o/r.git",
+		},
+		{
+			name: "password userinfo is scrubbed",
+			in:   errors.New("clone failed: https://user:p4ss@example.com/repo"),
+			want: "clone failed: https://example.com/repo",
+		},
+		{
+			name: "no userinfo is left untouched",
+			in:   errors.New("fatal: repository https://github.com/o/r.git not found"),
+			want: "fatal: repository https://github.com/o/r.git not found",
+		},
+		{
+			name: "no URL at all is left untouched",
+			in:   errors.New("exit status 128"),
+			want: "exit status 128",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactErr(tc.in)
+			if got != tc.want {
+				t.Fatalf("redactErr = %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, "ghp_secret") || strings.Contains(got, "p4ss") {
+				t.Fatalf("redactErr leaked a credential: %q", got)
+			}
+		})
+	}
+}
+
 func newFakeServer(t *testing.T, handle func(*testing.T, *websocket.Conn)) *httptest.Server {
 	t.Helper()
 	up := websocket.Upgrader{}
