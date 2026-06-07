@@ -100,7 +100,9 @@ For each issue, in DAG order:
    > `docs/adr/` (do not contradict any ADR), `docs/supervision-tree.md`
    > (process architecture), and the PRDs (`docs/prd/athanor-mvp.md` for
    > testing seams, `docs/prd/runner-protocol.md` for protocol semantics).
-   > Work test-first at the seams the issue names. Create a branch
+   > Work test-first at the seams the issue names: invoke the `/tdd`
+   > skill (via the Skill tool) and drive its red-green-refactor loop
+   > for the issue's acceptance criteria. Create a branch
    > `slice/N-short-slug`, commit in coherent steps, run the full test
    > suite, and open a PR titled after the issue with "Closes #N" in the
    > body. Never merge the PR — the human merges. Budget yourself ~100k
