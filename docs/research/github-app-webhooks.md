@@ -27,7 +27,7 @@ verified is marked *(unverified)* inline and listed at the end.
 | Webhook events | Subscribe to `push` and `pull_request` only for the first cut. Treat **fork PRs as untrusted** from day one (see fork-PR section). |
 | Signature | Verify `X-Hub-Signature-256` (HMAC-SHA256 over **raw body bytes**, constant-time compare) before parsing. Reject on mismatch. **Non-negotiable.** |
 | Idempotency | Dedupe on `X-GitHub-Delivery` (a GUID) with a unique constraint. Ack fast (return 2xx well under GitHub's ~10 s timeout), process async. |
-| Homelab reachability | **Cloudflare Tunnel** with a cheap owned domain is the lowest-friction durable answer. **smee.io** is the zero-cost dev relay. Tailscale Funnel and polling are fallbacks, not the primary. |
+| Reachability | **No public ingress — decided.** GitHub never reaches the homelab; tunnels (Cloudflare Tunnel, Tailscale Funnel) are ruled out. **Poll the GitHub API** as the primary Trigger source; an **owned cloud-side relay** drained outbound is the event-driven upgrade; **ngrok for attended demos only**. A future control plane on AWS dissolves the problem — and nested KVM on virtual EC2 (Feb 2026) keeps the Firecracker path open there. |
 | Status reporting | Start with the **commit Statuses API** (one POST, trivial). Graduate to the **Checks API** when you want rich per-Job output, re-run buttons, and annotations. |
 | Private-repo clone | Vendor practice: scope an installation token to the one repo, hand it to the build, `git clone https://x-access-token:<token>@github.com/...`. Token TTL (1 h) vs long Jobs is a real seam. **Auth/delivery design is owned by a separate machine-auth session — this report only names the seam.** |
 | OSS reference | Woodpecker/Drone model: App/OAuth install adds a webhook per repo; inbound webhook → "create a build". Athanor's equivalent: webhook handler validates, maps payload → Definition, calls the **same** Pipeline-creation path the API Trigger uses. |
@@ -163,61 +163,81 @@ should be ignored). Rules that matter:
 **Redelivery / replay (volatile).** GitHub keeps a **Recent Deliveries** log
 (request, payload, response, timing) with a manual **Redeliver** button, and
 exposes a **REST API** to list deliveries and get/redeliver an individual one.
-This is genuinely useful for a homelab: if your control plane was down, you can
-replay the missed deliveries rather than losing those Triggers — a partial
-mitigation for the reachability problem below.
+This is genuinely useful if a relay-based path (§3) is ever adopted: if the
+relay or control plane was down, you can replay the missed deliveries rather
+than losing those Triggers. Under §3's polling-primary recommendation there
+are no deliveries to replay — the poller's last-seen cursor plays this
+recovery role instead.
 
 ---
 
-## 3. Homelab reachability (the control plane runs on a home network)
+## 3. Reachability (decided constraint: the homelab takes no public ingress)
 
-This is the hard constraint that does not exist for cloud CI: **GitHub must
-reach a service behind a home router with no public IP and no open inbound
-ports.** Per the homelab topology, the control plane runs on a bare-metal mini
-PC at home. Options, ranked for a hobby deployment:
+The governing decision, made 2026-06-08: **the homelab will not be exposed to
+the internet in any form.** That rules out not just port-forwarding but also
+the outbound-initiated tunnels that are the standard self-hoster answer —
+Cloudflare Tunnel and Tailscale Funnel open no inbound ports, but they publish
+a public hostname that routes into the lab, and that counts as exposure here.
+Consequence: **GitHub can never deliver a webhook to a homelab-resident
+control plane.** Every viable option below is outbound-only from the lab.
+(Recorded explicitly so future sessions don't re-propose tunnels.)
 
-**Cloudflare Tunnel — recommended primary (volatile).**
-A `cloudflared` daemon on the mini PC makes an **outbound** connection to
-Cloudflare; inbound webhooks arrive at a Cloudflare edge hostname and are piped
-down the tunnel. **No open ports, no public IP.** With an **owned domain on
-Cloudflare DNS** it runs free, indefinitely, for HTTP — you get a stable
-hostname (`hooks.yourdomain.dev`), TLS, and DDoS/WAF in front of your home box.
-Cost is just the domain (~$10/yr). The throwaway `trycloudflare.com` subdomain
-exists for quick tests but is rate-limited and not for durable use. **This is
-the best maturity/cost/control balance for Athanor:** stable URL to register in
-the App, a security layer in front of a home network, and you own the name.
+**Polling — recommended primary while the control plane lives in the lab
+(stable).** The control plane polls the GitHub API on a timer using the App's
+installation token: list commits / open PRs per enabled repo, diff against a
+persisted last-seen cursor, synthesize a Trigger into the same
+Pipeline-creation path. Trade-offs: Trigger latency equals the poll interval,
+and it burns API quota — though at hobby repo counts a 30–60 s interval sits
+far inside the 5,000 req/h installation budget, and conditional requests
+(ETag/`304`) don't count against it. The quiet win: polling makes §2's
+webhook-handler surface (signature verification, delivery dedupe) entirely
+unnecessary — the poller *is* the Trigger adapter, and its cursor *is* the
+recovery mechanism after downtime. (ADR 0001 rejected polling for the Runner
+protocol; this is a different boundary — GitHub is the server here, and
+seconds of Trigger latency are tolerable where Job dispatch latency is not.)
 
-**smee.io — recommended for dev / first slice (volatile, *partially
-unverified*).** GitHub's own webhook-relay service (the `smee-client` pattern
-from the GitHub App dev docs): you point the App's webhook URL at a smee
-channel, run a local client that forwards deliveries to `localhost`. Zero cost,
-zero infra, no domain. Trade-off: it's a **public relay you don't control**, no
-auth on the channel, and it's a dev convenience rather than a durable
-production path. Ideal for building/testing the webhook handler before standing
-up the tunnel. (Current smee.io operational status/limits *(unverified)* —
-search did not surface 2026 specifics; treat as "still the standard dev relay,
-confirm it's up when you reach this slice".)
+**Owned cloud-side relay — the event-driven upgrade path.** A small component
+you own outside the lab (a Cloudflare Worker + queue, or a $5 VPS) receives
+webhooks at a public endpoint, verifies and persists them, and the control
+plane drains it over an **outbound** long-poll/SSE connection. Webhook-grade
+latency and the full §2 surface, lab stays dark. Cost: you now operate and
+secure a public cloud component — real weight for a hobby deployment. Adopt
+only if polling latency starts to grate.
 
-**Tailscale Funnel — viable fallback (volatile).** Funnel exposes a tailnet
-host on a public `*.ts.net` hostname. Zero-config, instant, free on the
-personal plan — **but** it's still beta-ish, capped (commonly cited **max 3
-funnels** per tailnet), gives no custom domain and no WAF. If you already run
-Tailscale at home it's a fine no-extra-cost option; if not, it's more moving
-parts than Cloudflare Tunnel for a public-facing endpoint. Tailscale's sweet
-spot is *private* access, not public webhook ingestion.
+**ngrok — acceptable for one-off demos (decided).** For a live demo, a
+temporary ngrok tunnel to the webhook handler is fine — it's exposure, but
+deliberate, attended, and torn down afterward. A demo lane, not an
+architecture: nothing durable gets registered against an ephemeral ngrok URL.
 
-**Polling fallback — the no-ingress escape hatch (stable).** If inbound is
-truly off the table, the control plane can **poll** the GitHub API on a timer
-(list commits / open PRs, diff against last-seen SHA, synthesize a Trigger).
-Trade-offs: latency (poll interval), API quota burn, and more control-plane
-logic. It's strictly worse than webhooks for a normal setup, but it's the
-guaranteed-works floor and a reasonable degraded mode. Combined with the
-redelivery API, it's also a backfill tool after downtime.
+**smee.io — dev convenience only, same caveat.** The smee client is
+outbound-only (SSE from smee.io to localhost), so the lab isn't listening —
+but deliveries transit an unauthenticated third-party relay. Useful for
+developing a webhook handler against real payloads; skippable entirely if
+polling stays primary (there's no handler to develop). *(2026 operational
+status unverified.)*
 
-**Recommendation:** build the handler against **smee.io**, ship the durable
-deployment on **Cloudflare Tunnel + owned domain**, keep **polling** in your
-back pocket as a documented degraded mode. Lean on the **redelivery API** to
-recover missed Triggers after the home box is offline.
+**The endgame that dissolves the problem: control plane on AWS (volatile,
+verified Feb 2026).** If the control plane eventually moves to AWS, it gets an
+ordinary public HTTPS endpoint and webhooks Just Work — §2 applies verbatim
+and this whole section reduces to a TLS listener. That move stopped requiring
+expensive `.metal` instances for the Firecracker ambition: **AWS added nested
+virtualization on virtual EC2 instances (February 2026)** — KVM as an L1
+hypervisor on C8i/M8i/R8i instance families, all commercial regions, no
+Graviton support. So a single Intel-family EC2 instance can host the control
+plane *and* boot Firecracker Runners under nested KVM. Caveats worth carrying
+into that future decision: nested-virt performance overhead is real (it's
+aimed at emulators/CI-style workloads, which is exactly this use), the
+instance families are current-gen Intel only, and per-hour cost vs the
+already-owned mini PC is the actual trade — the homelab remains the free
+default. *(Nested-KVM performance under Firecracker specifically: unverified —
+no published benchmarks found; measure before committing.)*
+
+**Recommendation:** while the control plane is homelab-resident, **poll** —
+it honors the no-ingress decision with zero extra infrastructure and makes
+the webhook handler unnecessary. Keep the **owned relay** documented as the
+event-driven upgrade, **ngrok** for attended demos only, and revisit the
+whole question only if/when the control plane moves to AWS, where webhooks
+become trivial and §2 applies as written.
 
 ---
 
@@ -316,7 +336,8 @@ not a solved problem.**
    you to wire hooks by hand).
 2. The forge sends webhooks (push, PR, tag) to the Woodpecker **server**, which
    must be **reachable from the forge** — exactly the reachability problem of §3,
-   and the reason self-hosters reach for tunnels.
+   and the reason self-hosters typically reach for tunnels (ruled out for
+   Athanor; §3 polls instead).
 3. On an inbound webhook, the server validates it, reads the in-repo pipeline
    file, and **creates a build/pipeline**, then schedules its work.
 
@@ -371,6 +392,7 @@ independent. **Do not design the YAML here.**
 - [Tailscale vs Cloudflare Tunnel comparison](https://tech.breakingcube.com/2026/05/02/tailscale-vs-cloudflare-tunnel-zero-trust-comparison/) and [Pinggy — Cloudflare Tunnel alternatives 2026](https://pinggy.io/blog/best_cloudflare_tunnel_alternatives/) (Funnel beta, 3-funnel cap, public-vs-private fit)
 - [Woodpecker CI — your first pipeline](https://woodpecker-ci.org/docs/usage/intro) and [Self-host Woodpecker for Gitea/Forgejo 2026](https://ossalt.com/guides/self-host-woodpecker-ci-2026) (forge webhook auto-creation, server reachability, webhook→build)
 - [Cloning private repo with a GitHub App — community discussion #24575](https://github.com/orgs/community/discussions/24575) and [git clone with installation token — discussion #173881](https://github.com/orgs/community/discussions/173881) (`x-access-token` convention, `contents:read`)
+- [Amazon EC2 supports nested virtualization on virtual EC2 instances — AWS What's New (Feb 2026)](https://aws.amazon.com/about-aws/whats-new/2026/02/amazon-ec2-nested-virtualization-on-virtual/) and [InfoQ coverage (Mar 2026)](https://www.infoq.com/news/2026/03/aws-ec2-nested-virtualization/) (KVM/Hyper-V as L1 on C8i/M8i/R8i, all commercial regions, no Graviton)
 
 ## Unverified claims
 
@@ -383,6 +405,9 @@ independent. **Do not design the YAML here.**
   *(unverified)* to the exact second; design for "respond fast, well under
   ~10 s".
 - **smee.io 2026 operational status/limits**: not surfaced by search — *(unverified)*.
+- **Firecracker performance under EC2 nested KVM**: the Feb 2026 nested-virt
+  launch is verified, but no published Firecracker-under-nested-KVM benchmarks
+  were found — *(unverified)*; measure before committing to an AWS endgame.
   Plan assumes it remains the standard GitHub-App dev relay; confirm it's live
   when the webhook-handler slice starts.
 - **Tailscale Funnel "max 3 funnels per tailnet"**: commonly cited, not
