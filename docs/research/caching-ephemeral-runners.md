@@ -27,7 +27,7 @@ verified is marked *(unverified)* inline.
 |---|---|
 | What to cache first | **Dependency caches only** (`deps/` + `_build/`, Go module + build cache). Highest hit-rate, simplest invalidation. Defer incremental-build and Docker-layer caching. |
 | Where to store it | **minio/S3 as tar archives** — the actions/cache model. The `LogStore` blob plumbing from ADR 0004 is 90% of the mechanism; add a `CacheStore` behaviour beside it. |
-| Cache key | `{toolchain}-{os}-{hash(lockfile)}` exact key + a prefix `restore-key` for partial hits. Lockfile hash is the invalidation signal. |
+| Cache key | `{toolchain-version}-{os}-{purpose}-{hash(lockfile)}` exact key + a prefix `restore-key` for partial hits. Lockfile hash is the invalidation signal; toolchain version is part of the key because compiled caches are version-specific. |
 | Who moves the bytes | The **Runner** restores on start and saves at end, over HTTP to minio with a presigned URL the control plane mints. Keeps cache bytes off the WebSocket and out of Postgres. |
 | Security | **Scope every cache entry to a ref** and never let an untrusted-PR Job *write* the default-branch cache. This is the one non-negotiable; §3 explains why. |
 | Firecracker fit | Cache stays an **object-store tar restored into the guest at Job start** — *not* a virtio-blk drive or virtiofs mount. virtiofs is still unsupported in Firecracker [volatile, verified]; a second block device is real plumbing for marginal gain at this scale. |
@@ -285,7 +285,8 @@ ext4 image store. That's the property to preserve.
    plumbing is most of this; the new part is key/ref namespacing and presigned
    URLs.)
 2. **Key derivation in the control plane.** The Definition / Job carries enough
-   to compute `{toolchain}-{os}-{hash(lockfile)}` and the ref namespace. The
+   to compute `{toolchain-version}-{os}-{purpose}-{hash(lockfile)}` (the §"Cache
+   key design" contract) and the ref namespace. The
    control plane mints **presigned PUT/GET URLs** scoped to the allowed keys and
    hands them to the Runner at dispatch.
 3. **Restore-on-start / save-on-end in the Runner.** On start: GET the exact key,
