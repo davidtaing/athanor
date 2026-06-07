@@ -137,7 +137,6 @@ defmodule AthanorWeb.DagSchedulingTest do
   end
 
   test "an unrelated branch keeps running when another branch fails" do
-
     {:ok, _pipeline} =
       Pipelines.create_pipeline(%{
         git_url: "u",
