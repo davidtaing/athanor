@@ -144,7 +144,12 @@ defmodule AthanorWeb.RunnerChannel do
     |> Ash.Changeset.for_update(action, Map.new(args))
     |> Ash.update()
     |> case do
-      {:ok, _job} ->
+      {:ok, transitioned} ->
+        # A terminal transition makes the Job's Dependency edges mean something
+        # (issue #9): success enqueues newly-runnable dependents, failure skips
+        # transitive dependents. The DAG advance is driven from the same place
+        # the fact lands, then the Scheduler is nudged from inside advance.
+        maybe_advance(transitioned)
         {:reply, :ok, socket}
 
       # A duplicate transition (already running / already terminal) is rejected
@@ -178,4 +183,12 @@ defmodule AthanorWeb.RunnerChannel do
     runner = Ash.get!(Runner, socket.assigns.runner_id, load: [:job])
     runner.job
   end
+
+  # Advance the DAG only when the Job has actually reached a terminal verdict;
+  # `assigned -> running` (job:started) changes no Dependency edge.
+  defp maybe_advance(%{state: state} = job)
+       when state in [:succeeded, :failed, :skipped, :canceled],
+       do: Athanor.Pipelines.advance(job)
+
+  defp maybe_advance(_job), do: :ok
 end
