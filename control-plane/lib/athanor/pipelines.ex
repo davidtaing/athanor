@@ -9,9 +9,18 @@ defmodule Athanor.Pipelines do
   """
   use Ash.Domain, otp_app: :athanor, extensions: [AshAdmin.Domain]
 
+  alias Athanor.Pipelines.DagAdvance
+
   admin do
     show? true
   end
+
+  @doc """
+  Advance the DAG after a Job reaches a terminal state (issue #9): enqueue
+  newly-runnable dependents on success, skip transitive dependents on failure.
+  Delegates to `Athanor.Pipelines.DagAdvance`; see its docs for the rules.
+  """
+  defdelegate advance(job), to: DagAdvance
 
   resources do
     resource Athanor.Pipelines.Pipeline do

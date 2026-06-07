@@ -71,6 +71,14 @@ config :athanor,
 # Overridden per-environment; in prod it is required from ATHANOR_API_TOKEN.
 config :athanor, :api_token, nil
 
+# Scheduler concurrency cap: the most Jobs that may be assigned/running at once
+# on this node (docs/supervision-tree.md, runner-protocol PRD config table). The
+# cap is derived from the store each tick, never counted in memory.
+config :athanor, :max_concurrent_runners, 5
+
+# Periodic corrective sweep interval — events for speed, sweep for correctness.
+config :athanor, :scheduler_sweep_interval, :timer.seconds(30)
+
 # Configure the endpoint
 config :athanor, AthanorWeb.Endpoint,
   url: [host: "localhost"],

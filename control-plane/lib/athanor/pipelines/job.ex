@@ -52,7 +52,7 @@ defmodule Athanor.Pipelines.Job do
   end
 
   actions do
-    defaults [:read]
+    defaults [:read, :update]
 
     # Jobs are created only as part of a Pipeline (see Pipeline.create). This
     # internal create is used by the Pipeline's nested manage_relationship; it
@@ -60,12 +60,26 @@ defmodule Athanor.Pipelines.Job do
     create :create do
       primary? true
       accept [:name, :image, :steps, :env, :timeout, :needs, :state]
+
+      # A Job created already `:queued` (no Dependencies) stamps its place in the
+      # queue: `WHERE state = 'queued' ORDER BY queued_at` IS the queue
+      # (docs/supervision-tree.md). A `:waiting` Job gets stamped later, on enqueue.
+      change fn changeset, _context ->
+        if Ash.Changeset.get_attribute(changeset, :state) == :queued do
+          Ash.Changeset.force_change_attribute(changeset, :queued_at, DateTime.utc_now())
+        else
+          changeset
+        end
+      end
     end
 
     # Lifecycle transitions. No execution exists in this slice, so these are not
     # driven by any caller yet; they complete the state machine so future slices
     # (scheduling, dispatch, recovery, cancellation) can drive them.
     update :enqueue do
+      # Stamp the queue position as the Job becomes runnable (its Dependencies
+      # have all succeeded). queued_at orders the queue head for dispatch.
+      change set_attribute(:queued_at, &DateTime.utc_now/0)
       change transition_state(:queued)
     end
 
@@ -124,6 +138,11 @@ defmodule Athanor.Pipelines.Job do
 
     # Names of Jobs in the same Pipeline this Job depends on (Dependencies).
     attribute :needs, {:array, :string}, allow_nil?: false, default: []
+
+    # When the Job entered the `queued` state. The queue has no data structure;
+    # `WHERE state = 'queued' ORDER BY queued_at` IS the queue
+    # (docs/supervision-tree.md), so dispatch takes the oldest-queued first.
+    attribute :queued_at, :utc_datetime_usec, allow_nil?: true
 
     # The Failure Reason on a Failed Job (`CONTEXT.md`). nil unless failed.
     attribute :failure_reason, :atom,

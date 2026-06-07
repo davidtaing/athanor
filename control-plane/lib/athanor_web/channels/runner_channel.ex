@@ -144,7 +144,12 @@ defmodule AthanorWeb.RunnerChannel do
     |> Ash.Changeset.for_update(action, Map.new(args))
     |> Ash.update()
     |> case do
-      {:ok, _job} ->
+      {:ok, transitioned} ->
+        # A terminal transition makes the Job's Dependency edges mean something
+        # (issue #9): success enqueues newly-runnable dependents, failure skips
+        # transitive dependents. The DAG advance is driven from the same place
+        # the fact lands, then the Scheduler is nudged from inside advance.
+        maybe_advance(transitioned)
         {:reply, :ok, socket}
 
       # A duplicate transition (already running / already terminal) is rejected
@@ -152,7 +157,7 @@ defmodule AthanorWeb.RunnerChannel do
       # ack-and-ignore that one case, not error.
       {:error, %Ash.Error.Invalid{} = error} = result ->
         if no_matching_transition?(error) do
-          {:reply, :ok, socket}
+          ack_duplicate(socket, action)
         else
           unexpected_transition_error(socket, action, result)
         end
@@ -160,6 +165,16 @@ defmodule AthanorWeb.RunnerChannel do
       result ->
         unexpected_transition_error(socket, action, result)
     end
+  end
+
+  # Ack a duplicate (already running / already terminal) transition. For a
+  # *terminal* fact, re-drive the DAG first: if the first finished's advancement
+  # failed after the state write, this duplicate is the only remaining signal,
+  # so dependents would otherwise strand in :waiting. Advancement is idempotent
+  # — it reads rows and drives transitions that no-op when already done.
+  defp ack_duplicate(socket, action) do
+    if terminal_action?(action), do: maybe_advance(current_job(socket))
+    {:reply, :ok, socket}
   end
 
   defp no_matching_transition?(%Ash.Error.Invalid{errors: errors}) do
@@ -178,4 +193,14 @@ defmodule AthanorWeb.RunnerChannel do
     runner = Ash.get!(Runner, socket.assigns.runner_id, load: [:job])
     runner.job
   end
+
+  # Advance the DAG only when the Job has actually reached a terminal verdict;
+  # `assigned -> running` (job:started) changes no Dependency edge.
+  defp maybe_advance(%{state: state} = job)
+       when state in [:succeeded, :failed, :skipped, :canceled],
+       do: Athanor.Pipelines.advance(job)
+
+  defp maybe_advance(_job), do: :ok
+
+  defp terminal_action?(action), do: action in [:succeed, :fail, :skip, :cancel]
 end
