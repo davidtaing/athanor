@@ -76,7 +76,7 @@ Wire direction fixes who may reply (PRD invariant 5):
   three surface on the wire as `invalid_credentials` (fatal).
 - **TTL is derived, not configured** (PRD; `Runner.derived_boot_token_ttl_ms/0`):
 
-  ```
+  ```text
   TTL = boot_timeout + scheduler_sweep_interval
   ```
 
@@ -142,7 +142,7 @@ time a Step reaches `job:assign` it is already a well-formed object.
 
 ### Rejoin (specified, not yet implemented — see PRD; issue #10)
 
-The PRD specifies rejoin with params `{ "session_token": … }` and a state-resync
+The PRD specifies rejoin with params `{ "session_token": "<token>" }` and a state-resync
 reply `{protocol_version, verdict: "continue" | "stop"}`, including the
 `assigned + unstamped ⇒ re-send job:assign` rule and the `stop` cancel-path.
 
