@@ -85,5 +85,21 @@ defmodule AthanorWeb.RunnerChannelRejectionTest do
       assert reply.reason == "try_again"
       refute reply.reason == "invalid_credentials"
     end
+
+    test "a non-not-found fetch fault is reported as try_again, not invalid_credentials",
+         %{runner: runner} do
+      # A genuine miss (unknown runner) is invalid_credentials, but any *other*
+      # fetch failure (a datastore blip) must not be laundered into a fatal
+      # credential rejection — it is transient and the Runner should retry.
+      Application.put_env(:athanor, :runner_channel_fetch_fault_runner_id, runner.id)
+
+      on_exit(fn ->
+        Application.delete_env(:athanor, :runner_channel_fetch_fault_runner_id)
+      end)
+
+      assert {:error, reply} = connect_and_join(runner.id, %{"boot_token" => runner.boot_token})
+      assert reply.reason == "try_again"
+      refute reply.reason == "invalid_credentials"
+    end
   end
 end

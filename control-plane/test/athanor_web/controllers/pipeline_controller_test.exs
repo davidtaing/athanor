@@ -167,6 +167,22 @@ defmodule AthanorWeb.PipelineControllerTest do
       assert Enum.any?(errors, &(&1["message"] =~ "command"))
     end
 
+    test "a Step with an explicit null name is rejected", %{conn: conn} do
+      # `name` is optional, but when the key is present it must be a non-empty
+      # string — an explicit `name: nil` is a malformed Step, not an absent name.
+      conn =
+        create(conn, [
+          %{
+            "name" => "build",
+            "image" => "alpine:3",
+            "steps" => [%{"command" => "make", "name" => nil}]
+          }
+        ])
+
+      assert %{"errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["message"] =~ "Step name"))
+    end
+
     test "a Step object with an unknown key is rejected", %{conn: conn} do
       conn =
         create(conn, [

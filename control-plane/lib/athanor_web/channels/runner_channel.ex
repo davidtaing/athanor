@@ -138,10 +138,31 @@ defmodule AthanorWeb.RunnerChannel do
     do: {:error, :invalid_credentials, "missing credentials"}
 
   defp fetch_runner(runner_id) do
-    case Ash.get(Runner, runner_id) do
-      {:ok, runner} -> {:ok, runner}
-      {:error, _} -> {:error, :invalid_credentials, "unknown runner"}
+    case maybe_inject_fetch_fault(runner_id) || Ash.get(Runner, runner_id) do
+      {:ok, runner} ->
+        {:ok, runner}
+
+      # A genuine miss (no such Runner) is a credential rejection. Any other
+      # fetch failure is a transient datastore fault, not a bad credential, so
+      # re-raise it and let authenticate/2's rescue classify it as try_again —
+      # the same `Ash.Error.Invalid` shape-match idiom as burn_boot_token.
+      {:error, %Ash.Error.Invalid{} = error} ->
+        if not_found?(error) do
+          {:error, :invalid_credentials, "unknown runner"}
+        else
+          raise error
+        end
+
+      {:error, error} ->
+        raise error
     end
+  end
+
+  defp not_found?(%Ash.Error.Invalid{errors: errors}) do
+    Enum.any?(errors, fn
+      %Ash.Error.Query.NotFound{} -> true
+      _ -> false
+    end)
   end
 
   defp burn_boot_token(runner) do
@@ -167,6 +188,18 @@ defmodule AthanorWeb.RunnerChannel do
   defp maybe_inject_transient_fault(runner_id) do
     if Application.get_env(:athanor, :runner_channel_transient_fault_runner_id) == runner_id do
       raise "injected transient fault evaluating join for runner #{runner_id}"
+    end
+  end
+
+  # Test seam: a configured Runner id forces a *non-not-found* fetch failure (a
+  # datastore fault, e.g. a Framework error) out of fetch_runner, so the
+  # not-found vs transient split can be exercised at the Channel seam. The
+  # error is re-raised by fetch_runner and classified as try_again by
+  # authenticate/2's rescue — never laundered into invalid_credentials. No-op
+  # in prod (the key is unset).
+  defp maybe_inject_fetch_fault(runner_id) do
+    if Application.get_env(:athanor, :runner_channel_fetch_fault_runner_id) == runner_id do
+      {:error, %RuntimeError{message: "injected fetch fault for runner #{runner_id}"}}
     end
   end
 

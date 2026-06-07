@@ -77,17 +77,26 @@ defmodule Athanor.Pipelines.Pipeline.Validations.ValidateDefinition do
       unknown_step_keys?(step) ->
         "a Step may only have the keys command and name"
 
-      name = Map.get(step, :name) || Map.get(step, "name") ->
-        if is_binary(name),
-          do: nil,
-          else: "a Step name must be a string"
-
       true ->
-        nil
+        step_name_error(step)
     end
   end
 
   defp step_error(_step), do: "every Step must be an object with a command, not a bare string"
+
+  # `name` is optional, but when the key is present it must be a non-empty
+  # string — an explicit `name: nil` (or empty/non-string) is a malformed Step,
+  # not an absent name (PRD #35).
+  defp step_name_error(step) do
+    if step_has_name?(step) do
+      validate_step_name(Map.get(step, :name) || Map.get(step, "name"))
+    end
+  end
+
+  defp validate_step_name(name) when is_binary(name) and name != "", do: nil
+  defp validate_step_name(_name), do: "a Step name must be a non-empty string"
+
+  defp step_has_name?(step), do: Map.has_key?(step, :name) or Map.has_key?(step, "name")
 
   defp unknown_step_keys?(step) do
     Enum.any?(Map.keys(step), &(to_string(&1) not in ["command", "name"]))
