@@ -28,10 +28,10 @@ defmodule AthanorWeb.DagSchedulingTest do
         git_url: "https://github.com/example/repo.git",
         git_ref: "main",
         jobs: [
-          %{name: "a", image: "alpine:3", steps: ["a"]},
-          %{name: "b", image: "alpine:3", steps: ["b"], needs: ["a"]},
-          %{name: "c", image: "alpine:3", steps: ["c"], needs: ["a"]},
-          %{name: "d", image: "alpine:3", steps: ["d"], needs: ["b", "c"]}
+          %{name: "a", image: "alpine:3", steps: [%{"command" => "a"}]},
+          %{name: "b", image: "alpine:3", steps: [%{"command" => "b"}], needs: ["a"]},
+          %{name: "c", image: "alpine:3", steps: [%{"command" => "c"}], needs: ["a"]},
+          %{name: "d", image: "alpine:3", steps: [%{"command" => "d"}], needs: ["b", "c"]}
         ]
       })
 
@@ -169,10 +169,10 @@ defmodule AthanorWeb.DagSchedulingTest do
         git_url: "u",
         git_ref: "main",
         jobs: [
-          %{name: "a", image: "alpine:3", steps: ["a"]},
-          %{name: "b", image: "alpine:3", steps: ["b"], needs: ["a"]},
-          %{name: "x", image: "alpine:3", steps: ["x"]},
-          %{name: "y", image: "alpine:3", steps: ["y"], needs: ["x"]}
+          %{name: "a", image: "alpine:3", steps: [%{"command" => "a"}]},
+          %{name: "b", image: "alpine:3", steps: [%{"command" => "b"}], needs: ["a"]},
+          %{name: "x", image: "alpine:3", steps: [%{"command" => "x"}]},
+          %{name: "y", image: "alpine:3", steps: [%{"command" => "y"}], needs: ["x"]}
         ]
       })
 

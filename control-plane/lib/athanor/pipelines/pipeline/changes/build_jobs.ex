@@ -21,7 +21,7 @@ defmodule Athanor.Pipelines.Pipeline.Changes.BuildJobs do
         %{
           name: fetch(job, :name),
           image: fetch(job, :image),
-          steps: fetch(job, :steps) || [],
+          steps: normalize_steps(fetch(job, :steps) || []),
           env: fetch(job, :env) || %{},
           timeout: fetch(job, :timeout),
           needs: needs,
@@ -37,5 +37,26 @@ defmodule Athanor.Pipelines.Pipeline.Changes.BuildJobs do
 
   defp fetch(job, key) do
     Map.get(job, key) || Map.get(job, to_string(key))
+  end
+
+  # Store each Step as a string-keyed object `%{"command" => c, "name" => n?}`,
+  # the single shape used at the Definition, in storage, and on the wire (PRD
+  # #35). The Definition is already validated, so `command` is present and any
+  # `name` is a string; we just normalise key form here.
+  defp normalize_steps(steps) do
+    Enum.map(steps, fn
+      step when is_map(step) ->
+        command = Map.get(step, :command) || Map.get(step, "command")
+        name = Map.get(step, :name) || Map.get(step, "name")
+
+        base = %{"command" => command}
+        if is_nil(name), do: base, else: Map.put(base, "name", name)
+
+      # A non-object Step is rejected by ValidateDefinition; this change runs in
+      # the same action, so guard against the malformed value rather than crash
+      # before the validation error surfaces as a 422.
+      other ->
+        other
+    end)
   end
 end

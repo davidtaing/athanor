@@ -28,7 +28,7 @@ defmodule Athanor.SchedulerTest do
   end
 
   defp job(name) do
-    %{name: name, image: "alpine:3", steps: ["make"]}
+    %{name: name, image: "alpine:3", steps: [%{"command" => "make"}]}
   end
 
   test "dispatching a queued Job boots exactly one Runner and assigns the Job" do

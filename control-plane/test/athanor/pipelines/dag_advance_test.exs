@@ -13,7 +13,7 @@ defmodule Athanor.Pipelines.DagAdvanceTest do
   defp pipeline_with(job_specs) do
     jobs =
       Enum.map(job_specs, fn {name, needs} ->
-        %{name: name, image: "alpine:3", steps: ["true"], needs: needs}
+        %{name: name, image: "alpine:3", steps: [%{"command" => "true"}], needs: needs}
       end)
 
     {:ok, pipeline} =

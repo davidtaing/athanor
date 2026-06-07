@@ -73,6 +73,21 @@ defmodule Athanor.Pipelines.Job do
       end
     end
 
+    # Record that the Runner acknowledged delivery of its job:assign (PRD #35).
+    # The stamp is the fact future rejoin logic reads (assigned + unstamped ⇒
+    # re-send job:assign); this action only records it. Idempotent: a duplicate
+    # job:ack keeps the first stamp (ack-and-ignore, protocol invariant 2). No
+    # state transition — acknowledgement is a fact on the Job, not a lifecycle
+    # state. COALESCE makes first-stamp-wins atomic DB-side, so concurrent
+    # duplicate acks (e.g. a rejoin re-send racing the original) cannot
+    # overwrite the first timestamp.
+    update :acknowledge do
+      change atomic_update(
+               :acknowledged_at,
+               expr(fragment("COALESCE(?, ?)", acknowledged_at, now()))
+             )
+    end
+
     # Lifecycle transitions. No execution exists in this slice, so these are not
     # driven by any caller yet; they complete the state machine so future slices
     # (scheduling, dispatch, recovery, cancellation) can drive them.
@@ -127,8 +142,12 @@ defmodule Athanor.Pipelines.Job do
 
     attribute :image, :string, allow_nil?: false
 
-    # Ordered shell commands. Steps have no independent state (glossary).
-    attribute :steps, {:array, :string}, allow_nil?: false, default: []
+    # Ordered Steps: each is an object `%{"command" => string, "name" => string?}`
+    # (PRD #35). The `command` is the shell command; `name` is an optional display
+    # name (display falls back to `command`). Steps have no independent state
+    # (glossary). The Definition is validated before any Job is written, so by the
+    # time a Step reaches storage it is already a well-formed object.
+    attribute :steps, {:array, :map}, allow_nil?: false, default: []
 
     # Plain environment variables made available to the Job's Steps.
     attribute :env, :map, allow_nil?: false, default: %{}
@@ -138,6 +157,11 @@ defmodule Athanor.Pipelines.Job do
 
     # Names of Jobs in the same Pipeline this Job depends on (Dependencies).
     attribute :needs, {:array, :string}, allow_nil?: false, default: []
+
+    # When the Runner acknowledged delivery of its job:assign (job:ack, PRD #35).
+    # nil until acknowledged; the rejoin re-send rule reads it (assigned +
+    # unstamped ⇒ re-send job:assign). A fact, never a lifecycle state.
+    attribute :acknowledged_at, :utc_datetime_usec, allow_nil?: true
 
     # When the Job entered the `queued` state. The queue has no data structure;
     # `WHERE state = 'queued' ORDER BY queued_at` IS the queue

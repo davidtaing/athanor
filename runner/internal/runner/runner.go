@@ -8,8 +8,10 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/davidtaing/athanor/runner/internal/executor"
 	"github.com/davidtaing/athanor/runner/internal/protocol"
@@ -33,24 +35,48 @@ type channel interface {
 	Close() error
 }
 
+// defaultJoinBackoff is the fixed short delay between join retries after a
+// try_again rejection (PRD #35: a dumb bounded backoff — the boot timeout, via
+// the caller's context, bounds the total).
+const defaultJoinBackoff = 2 * time.Second
+
 // Runner wires the protocol client to the executor for a single Job.
 type Runner struct {
 	cfg  Config
 	exec executor.StepRunner
 	ch   channel
 	log  *slog.Logger
+
+	// joinBackoff is the fixed delay between join retries on try_again. Set in
+	// tests; defaults to defaultJoinBackoff.
+	joinBackoff time.Duration
 }
 
 // assignPayload is the job:assign payload (docs/prd/runner-protocol.md). steps
-// is an ordered list of command strings (the Job.steps array attribute); no
-// image (the Runner is already inside it) and no timeout (control-plane
-// enforced).
+// is an ordered list of Step objects (PRD #35); no image (the Runner is already
+// inside it) and no timeout (control-plane enforced).
 type assignPayload struct {
 	JobID  string            `json:"job_id"`
 	GitURL string            `json:"git_url"`
 	GitRef string            `json:"git_ref"`
-	Steps  []string          `json:"steps"`
+	Steps  []step            `json:"steps"`
 	Env    map[string]string `json:"env"`
+}
+
+// step is a Step object {command (required), name (optional)} (PRD #35). The
+// runner executes `command`; display falls back to `command` when `name` is
+// empty.
+type step struct {
+	Command string `json:"command"`
+	Name    string `json:"name,omitempty"`
+}
+
+// displayName is the Step's name, falling back to its command (PRD #35).
+func (s step) displayName() string {
+	if s.Name != "" {
+		return s.Name
+	}
+	return s.Command
 }
 
 // finishedPayload is the job:finished payload — facts only, no verdict. The
@@ -64,10 +90,11 @@ type finishedPayload struct {
 // New returns a Runner that dials the configured URL.
 func New(cfg Config, exec executor.StepRunner) *Runner {
 	return &Runner{
-		cfg:  cfg,
-		exec: exec,
-		ch:   protocol.NewClient(cfg.URL, cfg.RunnerID),
-		log:  slog.Default(),
+		cfg:         cfg,
+		exec:        exec,
+		ch:          protocol.NewClient(cfg.URL, cfg.RunnerID),
+		log:         slog.Default(),
+		joinBackoff: defaultJoinBackoff,
 	}
 }
 
@@ -78,10 +105,11 @@ func New(cfg Config, exec executor.StepRunner) *Runner {
 func (r *Runner) Run(ctx context.Context) (int, error) {
 	defer func() { _ = r.ch.Close() }()
 
-	joined, err := r.ch.JoinWithBootToken(ctx, r.cfg.BootToken)
+	joined, err := r.joinWithRetry(ctx)
 	if err != nil {
-		// A definitively rejected join fails fast — exit nonzero immediately
-		// rather than retrying (PRD: rejected join).
+		// A definitively rejected (invalid_credentials) or otherwise failed join
+		// exits nonzero. A try_again rejection is retried inside joinWithRetry;
+		// only an exhausted/fatal join reaches here (PRD #35).
 		return 1, fmt.Errorf("join: %w", err)
 	}
 	r.log.Info("joined control plane",
@@ -105,13 +133,20 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 	}
 	r.log.Info("job assigned", "job_id", assign.JobID, "steps", len(assign.Steps))
 
+	// Acknowledge delivery of the assignment before reporting start (PRD #35).
+	// job:ack is an ordinary client push; the control plane stamps the Job so its
+	// rejoin re-send rule never re-dispatches work we already hold.
+	if err := r.ch.Send(ctx, "job:ack", map[string]any{}); err != nil {
+		return 1, fmt.Errorf("job:ack: %w", err)
+	}
+
 	if err := r.ch.Send(ctx, "job:started", map[string]any{}); err != nil {
 		return 1, fmt.Errorf("job:started: %w", err)
 	}
 
 	steps := make([]executor.Step, len(assign.Steps))
-	for i, cmd := range assign.Steps {
-		steps[i] = executor.Step{Name: fmt.Sprintf("step-%d", i), Run: cmd}
+	for i, s := range assign.Steps {
+		steps[i] = executor.Step{Name: s.displayName(), Run: s.Command}
 	}
 	result := executor.RunSteps(ctx, r.exec, steps)
 
@@ -124,6 +159,35 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 	}
 
 	return result.ExitCode, nil
+}
+
+// joinWithRetry performs the first join, retrying on a try_again rejection with
+// a fixed backoff (PRD #35: dumb bounded backoff). An invalid_credentials
+// rejection — or any non-try_again error — is fatal and returned immediately.
+// The caller's context (carrying the boot timeout) bounds the total retry time.
+func (r *Runner) joinWithRetry(ctx context.Context) (protocol.JoinReply, error) {
+	for {
+		joined, err := r.ch.JoinWithBootToken(ctx, r.cfg.BootToken)
+		if err == nil {
+			return joined, nil
+		}
+
+		var rej *protocol.JoinRejectedError
+		if errors.As(err, &rej) && rej.Reason == protocol.ReasonTryAgain {
+			// Transient: retry after a fixed short backoff, unless the context
+			// (boot timeout) expires first.
+			r.log.Warn("join rejected with try_again; retrying", "backoff", r.joinBackoff)
+			select {
+			case <-time.After(r.joinBackoff):
+				continue
+			case <-ctx.Done():
+				return protocol.JoinReply{}, ctx.Err()
+			}
+		}
+
+		// invalid_credentials or any other error is fatal — fail fast.
+		return protocol.JoinReply{}, err
+	}
 }
 
 func (r *Runner) awaitAssign(ctx context.Context) (assignPayload, error) {

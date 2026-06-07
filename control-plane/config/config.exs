@@ -79,6 +79,13 @@ config :athanor, :max_concurrent_runners, 5
 # Periodic corrective sweep interval — events for speed, sweep for correctness.
 config :athanor, :scheduler_sweep_interval, :timer.seconds(30)
 
+# Boot timeout: from the Provisioner's boot call to the Runner's first join
+# (runner-protocol PRD config table). The Boot Token TTL is *derived* from this
+# plus one sweep interval (PRD #35) — never an independent knob — because
+# deadlines are sweep-enforced with ±one-interval slack, so a TTL equal to the
+# boot timeout would reject legitimate late joins the sweep would still accept.
+config :athanor, :boot_timeout, :timer.seconds(60)
+
 # Configure the endpoint
 config :athanor, AthanorWeb.Endpoint,
   url: [host: "localhost"],

@@ -34,11 +34,11 @@ defmodule AthanorWeb.PipelineControllerTest do
     test "creates a Pipeline; dependency-free Jobs are queued, dependent Jobs are waiting",
          %{conn: conn} do
       jobs = [
-        %{"name" => "build", "image" => "alpine:3", "steps" => ["make"]},
+        %{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]},
         %{
           "name" => "deploy",
           "image" => "alpine:3",
-          "steps" => ["make deploy"],
+          "steps" => [%{"command" => "make deploy"}],
           "needs" => ["build"]
         }
       ]
@@ -55,7 +55,11 @@ defmodule AthanorWeb.PipelineControllerTest do
     end
 
     test "rollup status of a fresh Pipeline with runnable work is pending", %{conn: conn} do
-      conn = create(conn, [%{"name" => "build", "image" => "alpine:3", "steps" => ["make"]}])
+      conn =
+        create(conn, [
+          %{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}
+        ])
+
       assert %{"data" => %{"status" => "pending"}} = json_response(conn, 201)
     end
 
@@ -64,7 +68,7 @@ defmodule AthanorWeb.PipelineControllerTest do
         %{
           "name" => "build",
           "image" => "alpine:3",
-          "steps" => ["make"],
+          "steps" => [%{"command" => "make"}],
           "env" => %{"CI" => "true"},
           "timeout" => 600
         }
@@ -77,10 +81,35 @@ defmodule AthanorWeb.PipelineControllerTest do
     end
 
     test "every Job state carries a transition timestamp", %{conn: conn} do
-      conn = create(conn, [%{"name" => "build", "image" => "alpine:3", "steps" => ["make"]}])
+      conn =
+        create(conn, [
+          %{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}
+        ])
+
       [job] = json_response(conn, 201)["data"]["jobs"]
       assert is_binary(job["created_at"])
       assert is_binary(job["state_changed_at"])
+    end
+
+    test "Step objects with optional names are accepted and persisted as objects", %{conn: conn} do
+      jobs = [
+        %{
+          "name" => "build",
+          "image" => "alpine:3",
+          "steps" => [
+            %{"command" => "make", "name" => "compile"},
+            %{"command" => "make test"}
+          ]
+        }
+      ]
+
+      conn = create(conn, jobs)
+      [job] = json_response(conn, 201)["data"]["jobs"]
+
+      assert job["steps"] == [
+               %{"command" => "make", "name" => "compile"},
+               %{"command" => "make test"}
+             ]
     end
   end
 
@@ -92,7 +121,7 @@ defmodule AthanorWeb.PipelineControllerTest do
     end
 
     test "missing image", %{conn: conn} do
-      conn = create(conn, [%{"name" => "build", "steps" => ["make"]}])
+      conn = create(conn, [%{"name" => "build", "steps" => [%{"command" => "make"}]}])
       assert %{"errors" => errors} = json_response(conn, 422)
       assert Enum.any?(errors, &(&1["message"] =~ "image"))
     end
@@ -124,6 +153,80 @@ defmodule AthanorWeb.PipelineControllerTest do
       assert Enum.any?(errors, &(&1["message"] =~ "name"))
     end
 
+    test "a bare-string Step is rejected with a clear error", %{conn: conn} do
+      conn = create(conn, [%{"name" => "build", "image" => "alpine:3", "steps" => ["make"]}])
+      assert %{"errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["message"] =~ "Step"))
+    end
+
+    test "a Step object missing command is rejected", %{conn: conn} do
+      conn =
+        create(conn, [%{"name" => "build", "image" => "alpine:3", "steps" => [%{"name" => "x"}]}])
+
+      assert %{"errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["message"] =~ "command"))
+    end
+
+    test "a Step with an explicit null name is rejected", %{conn: conn} do
+      # `name` is optional, but when the key is present it must be a non-empty
+      # string — an explicit `name: nil` is a malformed Step, not an absent name.
+      conn =
+        create(conn, [
+          %{
+            "name" => "build",
+            "image" => "alpine:3",
+            "steps" => [%{"command" => "make", "name" => nil}]
+          }
+        ])
+
+      assert %{"errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["message"] =~ "Step name"))
+    end
+
+    test "a Step object with an unknown key is rejected", %{conn: conn} do
+      conn =
+        create(conn, [
+          %{
+            "name" => "build",
+            "image" => "alpine:3",
+            "steps" => [%{"command" => "make", "shell" => "bash"}]
+          }
+        ])
+
+      assert %{"errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["message"] =~ "command and name"))
+    end
+
+    test "a non-flat env (nested value) is rejected", %{conn: conn} do
+      conn =
+        create(conn, [
+          %{
+            "name" => "build",
+            "image" => "alpine:3",
+            "steps" => [%{"command" => "make"}],
+            "env" => %{"CONFIG" => %{"nested" => "value"}}
+          }
+        ])
+
+      assert %{"errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["message"] =~ "env"))
+    end
+
+    test "an env with a non-string value is rejected", %{conn: conn} do
+      conn =
+        create(conn, [
+          %{
+            "name" => "build",
+            "image" => "alpine:3",
+            "steps" => [%{"command" => "make"}],
+            "env" => %{"RETRIES" => 3}
+          }
+        ])
+
+      assert %{"errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["message"] =~ "env"))
+    end
+
     test "no Pipeline is persisted when the definition is invalid", %{conn: conn} do
       create(conn, [
         %{"name" => "a", "image" => "alpine:3", "needs" => ["b"]},
@@ -137,7 +240,7 @@ defmodule AthanorWeb.PipelineControllerTest do
   describe "GET /api/pipelines/:id" do
     test "returns rollup status and per-Job states with timestamps", %{conn: conn} do
       jobs = [
-        %{"name" => "build", "image" => "alpine:3", "steps" => ["make"]},
+        %{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]},
         %{"name" => "deploy", "image" => "alpine:3", "needs" => ["build"]}
       ]
 
@@ -162,7 +265,9 @@ defmodule AthanorWeb.PipelineControllerTest do
   describe "GET /api/jobs/:id" do
     test "returns the Job's state and timing", %{conn: conn} do
       [job] =
-        create(conn, [%{"name" => "build", "image" => "alpine:3", "steps" => ["make"]}])
+        create(conn, [
+          %{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}
+        ])
         |> json_response(201)
         |> get_in(["data", "jobs"])
 
