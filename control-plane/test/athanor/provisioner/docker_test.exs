@@ -59,6 +59,18 @@ defmodule Athanor.Provisioner.DockerTest do
       assert labels["athanor.managed"] == "true"
       assert labels["athanor.runner_id"] == runner.id
     end
+
+    test "force-deletes the created container when start fails, leaking nothing", %{job: job} do
+      # The container is created (201) but start fails (the entrypoint binary
+      # doesn't exist), so the id is never recorded on the Runner. Without the
+      # compensating force-delete the container would leak, since destroy/1
+      # no-ops on the nil container_id.
+      assert {:error, {:start_failed, _}} =
+               Docker.boot(job, image: @test_image, command: ["/nonexistent-athanor-binary"])
+
+      assert managed_container_ids() == [],
+             "boot left an orphaned container after start failed"
+    end
   end
 
   describe "destroy/1" do
@@ -104,17 +116,18 @@ defmodule Athanor.Provisioner.DockerTest do
     end
   end
 
-  defp cleanup_managed_containers do
+  defp managed_container_ids do
     filters = Jason.encode!(%{"label" => ["athanor.managed=true"]})
 
     case Req.get(docker_req(url: "/containers/json", params: [all: true, filters: filters])) do
-      {:ok, %{status: 200, body: containers}} ->
-        for %{"Id" => id} <- containers do
-          Req.delete(docker_req(url: "/containers/#{id}", params: [force: true]))
-        end
+      {:ok, %{status: 200, body: containers}} -> for %{"Id" => id} <- containers, do: id
+      _ -> []
+    end
+  end
 
-      _ ->
-        :ok
+  defp cleanup_managed_containers do
+    for id <- managed_container_ids() do
+      Req.delete(docker_req(url: "/containers/#{id}", params: [force: true]))
     end
   end
 end

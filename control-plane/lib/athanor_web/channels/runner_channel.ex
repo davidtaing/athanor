@@ -223,11 +223,23 @@ defmodule AthanorWeb.RunnerChannel do
        when state in [:succeeded, :failed, :skipped, :canceled] do
     runner = runner_for(socket, job)
 
-    Task.Supervisor.start_child(Athanor.Provisioner.TaskSupervisor, fn ->
-      Provisioner.destroy(runner)
-    end)
+    case Task.Supervisor.start_child(Athanor.Provisioner.TaskSupervisor, fn ->
+           Provisioner.destroy(runner)
+         end) do
+      {:ok, _pid} ->
+        :ok
 
-    :ok
+      # The destroy Task couldn't even be spawned (supervisor saturated/down).
+      # The channel ack must not fail on this — the #10 label-sweep is the
+      # eventual backstop for the leaked container; just log it loudly.
+      {:error, reason} ->
+        Logger.error(
+          "runner_channel could not start destroy task for runner #{runner.id}: " <>
+            inspect(reason)
+        )
+
+        :ok
+    end
   end
 
   defp maybe_destroy_runner(_job, _socket), do: :ok

@@ -38,8 +38,7 @@ defmodule Athanor.Provisioner.Docker do
   def boot(job, opts) do
     with {:ok, runner} <- create_runner(job),
          {:ok, container_id} <- create_container(runner, opts),
-         :ok <- start_container(container_id),
-         {:ok, runner} <- record_container(runner, container_id) do
+         {:ok, runner} <- start_and_record_container(runner, container_id) do
       {:ok, runner}
     else
       {:error, reason} = error ->
@@ -81,6 +80,42 @@ defmodule Athanor.Provisioner.Docker do
     Runner
     |> Ash.Changeset.for_create(:boot, %{job_id: job.id})
     |> Ash.create()
+  end
+
+  # The container is created but not yet started, and its id isn't persisted on
+  # the Runner yet. If starting or recording fails here, `destroy/1` would no-op
+  # on the nil container_id and the created container would leak — so compensate
+  # by force-deleting it directly before surfacing the error.
+  defp start_and_record_container(runner, container_id) do
+    with :ok <- start_container(container_id),
+         {:ok, runner} <- record_container(runner, container_id) do
+      {:ok, runner}
+    else
+      {:error, reason} = error ->
+        force_delete_container(container_id)
+
+        Logger.error(
+          "docker provisioner force-deleted orphaned container #{container_id} " <>
+            "for runner #{runner.id} after boot failed: #{inspect(reason)}"
+        )
+
+        error
+    end
+  end
+
+  defp force_delete_container(container_id) do
+    case request(:delete, "/containers/#{container_id}", params: [force: true]) do
+      {:ok, %{status: status}} when status in [204, 200, 404] ->
+        :ok
+
+      other ->
+        Logger.error(
+          "docker provisioner failed to force-delete orphaned container " <>
+            "#{container_id}: #{inspect(other)}"
+        )
+
+        :ok
+    end
   end
 
   defp record_container(runner, container_id) do
