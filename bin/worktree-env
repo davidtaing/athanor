@@ -1,0 +1,35 @@
+# Derive ATHANOR_WORKTREE, PORT, and LIVE_DEBUGGER_PORT from the worktree
+# directory name. Sourced by the root .envrc (direnv) or manually:
+# `. bin/worktree-env`
+#
+#   athanor           -> main      PORT=4000    LIVE_DEBUGGER_PORT=4007
+#   athanor-wt<1-3>   -> wt<N>     PORT=4000+N  LIVE_DEBUGGER_PORT=4007+N
+#   anything else     -> sanitized dirname, ports hashed into 4100-4999
+#                        and 5100-5999 (covers agent-managed / nested
+#                        worktrees)
+#
+# config/dev.exs and config/test.exs use these to pick per-worktree ports
+# and databases. See docs/WORKTREES.md.
+
+_dir="$(basename "$PWD")"
+case "$_dir" in
+  athanor)
+    ATHANOR_WORKTREE=main
+    PORT=4000
+    LIVE_DEBUGGER_PORT=4007
+    ;;
+  athanor-wt[1-3])
+    _n="${_dir##athanor-wt}"
+    ATHANOR_WORKTREE="wt${_n}"
+    PORT=$((4000 + _n))
+    LIVE_DEBUGGER_PORT=$((4007 + _n))
+    ;;
+  *)
+    ATHANOR_WORKTREE="$(printf '%s' "$_dir" | tr -c 'a-zA-Z0-9' '_' | tr -s '_' | tr 'A-Z' 'a-z')"
+    _hash=$(printf '%s' "$_dir" | cksum | cut -d' ' -f1)
+    PORT=$((4100 + _hash % 900))
+    LIVE_DEBUGGER_PORT=$((5100 + _hash % 900))
+    ;;
+esac
+export ATHANOR_WORKTREE PORT LIVE_DEBUGGER_PORT
+unset _dir _n _hash
