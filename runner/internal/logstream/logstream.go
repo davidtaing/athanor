@@ -76,7 +76,28 @@ type Streamer struct {
 	errOnce sync.Once
 	done    chan struct{}
 
-	mu      sync.Mutex
+	// The shutdown handshake. A timer-driven flush callback can be inside enqueue
+	// at any moment, so the queue must not be closed while a producer might still
+	// send (that panics: send on closed channel). The flag + counter + cond below,
+	// all guarded by s.mu, are the barrier that makes the close race-free:
+	//
+	//   - closing is set by Close. enqueue checks it under s.mu before committing:
+	//     a producer that wins the race (sees closing == false) registers in
+	//     activeProducers and its chunk is drained + acked before Close returns; a
+	//     producer that observes closing drops the chunk (the Step is already over,
+	//     at-least-once covers only pre-Close output).
+	//   - activeProducers counts producers committed to (but not yet finished)
+	//     sending. Close waits on producerDone until it reaches zero, after which
+	//     no producer exists and closing the queue is race-free.
+	//
+	// Checking the flag and bumping the counter under one lock (vs a channel +
+	// WaitGroup) is what avoids the WaitGroup "Add concurrent with Wait" hazard.
+	mu              sync.Mutex
+	closing         bool
+	activeProducers int
+	producerDone    *sync.Cond
+	queueClosed     bool
+
 	nextSeq int
 	writers []*stepWriter
 }
@@ -100,6 +121,7 @@ func New(sender Sender, cfg Config) *Streamer {
 		cancel:   cancel,
 		done:     make(chan struct{}),
 	}
+	s.producerDone = sync.NewCond(&s.mu)
 	go s.run()
 	return s
 }
@@ -132,8 +154,10 @@ func (s *Streamer) Close(ctx context.Context) error {
 	defer s.cancel()
 
 	// Flush each Step writer's tail so no buffered bytes are stranded. Each Flush
-	// can block on backpressure (enqueue), so honor ctx between writers — a
-	// cancel makes enqueue return and lets us bail out of the flush loop.
+	// stops the writer's interval timer and can block on backpressure (enqueue),
+	// so honor ctx between writers — a cancel makes enqueue return and lets us
+	// bail out of the flush loop. These flushes run BEFORE we fire s.closed so
+	// the tail is never dropped (at-least-once on the non-cancelled path).
 	s.mu.Lock()
 	writers := make([]*stepWriter, len(s.writers))
 	copy(writers, s.writers)
@@ -148,7 +172,42 @@ func (s *Streamer) Close(ctx context.Context) error {
 		w.Flush()
 	}
 
-	close(s.queue)
+	// Stop every producer, then close the queue race-free. Setting s.closing makes
+	// any timer callback that wakes from here on drop its chunk in enqueue rather
+	// than commit to a send; the cond wait then blocks until every producer that
+	// had already committed (passed the closing check) has finished handing its
+	// chunk off. After the barrier no producer can reach the queue, so closing it
+	// is safe and gives run() a clean drained-and-closed completion signal.
+	//
+	// The barrier runs in a goroutine so Close can still honour ctx: a cancelled
+	// Close calls s.cancel(), which unwinds any committed-but-backpressured
+	// producer (its sends select on cctx) so activeProducers drains to zero and
+	// the barrier goroutine completes rather than leaking. The barrier broadcasts
+	// itself awake on each producerDone signal.
+	barrier := make(chan struct{})
+	go func() {
+		s.mu.Lock()
+		s.closing = true
+		for s.activeProducers > 0 {
+			s.producerDone.Wait()
+		}
+		if !s.queueClosed {
+			s.queueClosed = true
+			close(s.queue)
+		}
+		s.mu.Unlock()
+		close(barrier)
+	}()
+
+	select {
+	case <-barrier:
+	case <-ctx.Done():
+		// Unwind committed producers (their cctx-selecting sends return), which
+		// lets the barrier goroutine reach zero and exit; then bail without waiting.
+		s.cancel()
+		return ctx.Err()
+	}
+
 	select {
 	case <-s.done:
 	case <-ctx.Done():
@@ -171,9 +230,11 @@ func (s *Streamer) Close(ctx context.Context) error {
 func (s *Streamer) run() {
 	defer close(s.done)
 	for {
-		// Pull the next chunk, but also wake on cctx so a cancelled Close (stalled
-		// CP) tears the goroutine down even when the queue was never closed (Close
-		// bails out of its flush loop before closing the queue on an early cancel).
+		// Pull the next chunk. Close closes the queue only AFTER its producer
+		// barrier proves no producer can still send (so the close can never race a
+		// send); the closed-and-drained queue is then the normal-path completion
+		// signal. cctx wakes the goroutine for the cancelled-Close (stalled CP)
+		// path so it never pins a goroutine even when the queue was never closed.
 		var c Chunk
 		select {
 		case <-s.cctx.Done():
@@ -204,10 +265,28 @@ func (s *Streamer) run() {
 // cancel the chunk is dropped — Close is already returning ctx.Err() and the
 // at-least-once guarantee only covers the non-cancelled path.
 func (s *Streamer) enqueue(stepIndex int, content []byte) {
+	// Join the producer barrier before touching the queue, under s.mu so the
+	// closing check and the activeProducers bump are atomic with Close's barrier:
+	// if we see closing we drop (the Step is over; at-least-once covers only
+	// pre-Close output); otherwise we register, and Close's barrier cannot close
+	// the queue until we finish — so our send can never panic on a closed channel.
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	s.activeProducers++
 	s.nextSeq++
 	seq := s.nextSeq
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.activeProducers--
+		if s.activeProducers == 0 {
+			s.producerDone.Signal()
+		}
+		s.mu.Unlock()
+	}()
 
 	// Copy content: the writer reuses its buffer after the flush returns.
 	buf := make([]byte, len(content))

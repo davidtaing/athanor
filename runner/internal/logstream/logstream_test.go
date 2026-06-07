@@ -245,6 +245,55 @@ func TestCloseCancelMidFlightUnblocks(t *testing.T) {
 	}
 }
 
+// TestCloseRacesConcurrentTimerFlushes hammers Close against a flurry of
+// timer-driven flushes: a tiny MaxInterval means a flush callback is very likely
+// to be inside enqueue exactly when Close stops the producers and closes the
+// queue. Before the producer-barrier redesign this panicked (send on a closed
+// channel); the run loop here exercises that shutdown handshake repeatedly so
+// `-race` and the panic-on-closed-send both have many chances to trip.
+func TestCloseRacesConcurrentTimerFlushes(t *testing.T) {
+	for iter := 0; iter < 50; iter++ {
+		snd := &fakeSender{}
+		// Sub-millisecond interval + 1-byte cap so every write arms a timer that
+		// fires almost immediately, maximising the chance a callback is mid-enqueue
+		// when Close runs.
+		s := New(snd, Config{
+			MaxBytes:    1,
+			MaxInterval: 100 * time.Microsecond,
+			MaxUnacked:  4,
+		})
+
+		// Several writers all driving output concurrently with Close.
+		var writers sync.WaitGroup
+		stop := make(chan struct{})
+		for i := 0; i < 4; i++ {
+			w := s.StepWriter(i)
+			writers.Add(1)
+			go func() {
+				defer writers.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						// Ignore the error: once Close has fired, writes may race the
+						// shutdown — the contract under test is "no panic", not delivery.
+						_, _ = w.Write([]byte("x"))
+					}
+				}
+			}()
+		}
+
+		// Let the writers get going and timers start firing, then Close into the storm.
+		time.Sleep(time.Millisecond)
+		if err := s.Close(context.Background()); err != nil {
+			t.Fatalf("iter %d: close: %v", iter, err)
+		}
+		close(stop)
+		writers.Wait()
+	}
+}
+
 // TestBoundedBufferBlocksWriter: once the unacked buffer is full, a further
 // Write blocks (pipe backpressure) rather than dropping output — nothing is
 // ever silently dropped (PRD).
