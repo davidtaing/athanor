@@ -45,9 +45,11 @@ Default to Elixir; Go is for the runner only.
 - `docs/WORKTREES.md` — git worktree setup for parallel Claude Code
   sessions: persistent slots `~/athanor-wt{1,2,3}`, per-worktree Phoenix
   port/database via `bin/worktree-env` + direnv.
-- Still to write: system overview, supervision tree, and the full
-  Elixir↔Go runner protocol spec (registration, job dispatch, log
-  streaming, heartbeats).
+- `docs/supervision-tree.md` — control-plane process architecture
+  (singleton Scheduler, Task.Supervisor Provisioner, deadlines as
+  columns, no per-Job processes).
+- Still to write: system overview and the full Elixir↔Go runner
+  protocol spec (registration, job dispatch, log streaming).
 
 ## Decided (see docs/adr/)
 

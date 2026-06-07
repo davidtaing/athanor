@@ -83,6 +83,12 @@ The component that boots a Runner when a Job needs one and destroys it when
 the Job ends.
 _Avoid_: Autoscaler, pool manager
 
+**Scheduler**:
+The control-plane function that notices Queued Jobs and asks the Provisioner
+for Runners. It owns no queue of its own — the set of Jobs in the Queued
+state *is* the queue.
+_Avoid_: Queue (as a component), dispatcher, orchestrator
+
 **Boot Token**:
 The one-time credential a Runner presents on its first connection, created
 with the Runner before boot. Burned at first use; rejected on reuse or after
