@@ -116,6 +116,11 @@ defmodule Athanor.Scheduler do
     # not crash it and abort the dispatch pass for every other queued Job. Boot
     # then assign stays in this order by design — serialized dispatch means
     # there is no race to guard against by reordering.
+    #
+    # `boot`/`assign` may *raise* (a Provisioner crash, a data-layer error)
+    # rather than return `{:error, _}`. A raise here would escape the
+    # `reduce_while` and abort the whole pass, so it is converted to the same
+    # `{:error, %{job_id:, reason:}}` shape the scan already tolerates.
     with {:ok, _runner} <- Provisioner.boot(job),
          {:ok, assigned} <-
            job
@@ -127,6 +132,11 @@ defmodule Athanor.Scheduler do
         Logger.error("scheduler dispatch failed for job #{job.id}: #{inspect(reason)}")
         {:error, %{job_id: job.id, reason: reason}}
     end
+  rescue
+    exception ->
+      Logger.error("scheduler dispatch raised for job #{job.id}: #{Exception.message(exception)}")
+
+      {:error, %{job_id: job.id, reason: {:raised, exception}}}
   end
 
   # Periodic corrective sweep: re-read the store on a timer regardless of

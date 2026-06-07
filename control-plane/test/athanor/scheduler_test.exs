@@ -189,5 +189,43 @@ defmodule Athanor.SchedulerTest do
       assert [{:boot, %{job: booted}}] = Recorder.calls(:boot)
       assert booted.id == b.id
     end
+
+    test "a dispatch that RAISES never aborts the pass, so a later queued Job still dispatches" do
+      pipeline = pipeline_with_jobs([job("a"), job("b")])
+      jobs = Ash.load!(pipeline, :jobs).jobs
+      a = Enum.find(jobs, &(&1.name == "a"))
+      b = Enum.find(jobs, &(&1.name == "b"))
+
+      # Pin "a" as strictly the oldest queued Job so it is the queue head.
+      a
+      |> Ash.Changeset.for_update(:update, %{})
+      |> Ash.Changeset.force_change_attribute(
+        :queued_at,
+        DateTime.add(DateTime.utc_now(), -30, :second)
+      )
+      |> Ash.update!()
+
+      # Swap in a Provisioner that *raises* (not `{:error, _}`) when booting "a".
+      # Were the raise to escape `dispatch_up_to/2`, the whole pass would abort
+      # and "b" would never dispatch. The marker is "a"'s id (a unique UUID) so
+      # this global config swap can't make a concurrent async test's boot raise.
+      Application.put_env(:athanor, :provisioner, Athanor.Provisioner.Raising)
+      Application.put_env(:athanor, :raising_provisioner_job_id, a.id)
+
+      on_exit(fn ->
+        Application.delete_env(:athanor, :provisioner)
+        Application.delete_env(:athanor, :raising_provisioner_job_id)
+      end)
+
+      Scheduler.dispatch_queued(cap: 2)
+
+      # "a"'s raise was contained; "b" still dispatched into the open slot.
+      jobs = Ash.load!(pipeline, :jobs, reuse_values?: false).jobs
+      assert Enum.find(jobs, &(&1.name == "a")).state == :queued
+      assert Enum.find(jobs, &(&1.name == "b")).state == :assigned
+
+      assert [{:boot, %{job: booted}}] = Recorder.calls(:boot)
+      assert booted.id == b.id
+    end
   end
 end
