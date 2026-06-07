@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -239,7 +240,7 @@ func (r *Runner) runJob(ctx context.Context, assign assignPayload) (executor.Res
 		fmt.Fprint(os.Stderr, cloneRes.Output)
 	}
 	if cloneRes.Err != nil {
-		r.log.Error("clone failed", "git_url", assign.GitURL, "git_ref", assign.GitRef, "err", cloneRes.Err)
+		r.log.Error("clone failed", "git_url", redactURL(assign.GitURL), "git_ref", assign.GitRef, "err", cloneRes.Err)
 		// A failed clone fails the Job: a nonzero exit with no Step run. The Job
 		// failed before its Steps, so there is no failing Step index.
 		return executor.Result{ExitCode: 1}, nil
@@ -275,4 +276,16 @@ func (r *Runner) awaitAssign(ctx context.Context) (assignPayload, error) {
 			return assignPayload{}, ctx.Err()
 		}
 	}
+}
+
+// redactURL strips any userinfo from a URL before it is logged, so embedded
+// credentials (password, or a token riding in the username slot) never reach
+// job logs. Returns the input unchanged if it does not parse as a URL.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
