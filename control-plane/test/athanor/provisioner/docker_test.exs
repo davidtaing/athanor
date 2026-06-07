@@ -35,7 +35,7 @@ defmodule Athanor.Provisioner.DockerTest do
       Pipelines.create_pipeline(%{
         git_url: "https://github.com/example/repo.git",
         git_ref: "main",
-        jobs: [%{name: "build", image: @test_image, steps: ["true"]}]
+        jobs: [%{name: "build", image: @test_image, steps: [%{"command" => "true"}]}]
       })
 
     [job] = Ash.load!(pipeline, :jobs).jobs
