@@ -37,7 +37,7 @@ yourself.
 |---|---|---|
 | #2 | Walking skeleton: compose stack + health endpoint | — |
 | #3 | Create & fetch Pipelines | #2 |
-| #4 | Runner protocol v0 over Channels (fake runner) | #3 |
+| #4 | Runner protocol v1 over Channels (fake runner) | #3 |
 | #5 | Go runner walking skeleton | #4 |
 | #6 | Docker Provisioner — tracer bullet | #4, #5 |
 | #7 | Git clone in the runner | #6 |

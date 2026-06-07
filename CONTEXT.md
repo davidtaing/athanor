@@ -55,9 +55,10 @@ never a distinct state.
 _Avoid_: Passed, errored
 
 **Failure Reason**:
-Why a Job failed: nonzero exit, timeout, runner lost, or boot failure. All
-reasons share the single Failed state.
-_Avoid_: Error type, failure state
+Why a Job failed. Canonical tokens: `nonzero_exit`, `timeout`, `runner_lost`,
+`boot_failure`. All reasons share the single Failed state.
+_Avoid_: Error type, failure state, hyphenated or prose variants when naming
+the value
 
 **Skipped**:
 Terminal. The system's verdict when an upstream Dependency failed. Distinct

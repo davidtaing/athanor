@@ -87,10 +87,10 @@ Timer definitions (the precise semantics issue #10 needs):
 - **Boot timeout**: measured from the Provisioner's boot call to first join.
   No join within it ⇒ Runner declared dead, Job re-queued (story 18).
   Re-queue is bounded by **max boot attempts** (default 3): exhaustion fails
-  the Job with reason boot-failure instead of looping container churn.
+  the Job with reason `boot_failure` instead of looping container churn.
 - **Grace period**: measured from channel-process termination. Reconnection
   within it resumes per the rejoin rules; expiry fails the Job (reason
-  runner-lost) whether assigned or running — never a re-queue. A Runner that
+  `runner_lost`) whether assigned or running — never a re-queue. A Runner that
   has joined may already hold its Job definition, so post-join loss is never
   silently retried; only the boot timeout (never joined) re-queues.
 - A control-plane restart kills every channel process *from our side*;
@@ -171,7 +171,7 @@ topic scheme survives a framing change.
 - The join reply **echoes `protocol_version`** so a mismatched runner fails
   fast and loudly in its container logs instead of dying mutely.
 - Mismatch outcome: rejected join ⇒ Runner exits nonzero ⇒ Job fails with
-  the existing **boot failure** reason. No new state, no new failure reason.
+  the existing **`boot_failure`** reason. No new state, no new failure reason.
 - **Reserved**: negotiation logic (version ranges, capability flags). The
   MVP ships exactly one channel module, `runner:v1`.
 
@@ -183,7 +183,7 @@ topic scheme survives a framing change.
 | `job:assign` | CP → R | job id, git URL + ref, ordered Steps, env, log batching config (`max_bytes`, `max_interval`) | ack | Idempotent on Runner; re-sent after rejoin if still unacked. No image (Runner is already inside it), no timeout (control-plane enforced) |
 | `job:started` | R → CP | `{}` | ack | Drives assigned → running; duplicate = ack-and-ignore |
 | `log:chunk` | R → CP | `{seq, step_index, content}` | ack (after LogStore handoff) | At-least-once; resent after rejoin until acked |
-| `job:finished` | R → CP | `{exit_code, failed_step_index?}` | ack | Facts only — no verdict field; the CP derives it (exit 0 ⇒ succeeded; nonzero ⇒ failed, reason: nonzero exit). Sent only after all chunks acked; duplicate = ack-and-ignore. Runner exits after the ack |
+| `job:finished` | R → CP | `{exit_code, failed_step_index?}` | ack | Facts only — no verdict field; the CP derives it (exit 0 ⇒ succeeded; nonzero ⇒ failed, reason `nonzero_exit`). Sent only after all chunks acked; duplicate = ack-and-ignore. Runner exits after the ack |
 | `job:cancel` | CP → R | `{}` | — | Shared by user cancel / pipeline cancel / timeout; ≡ rejoin `stop`; no ack — drain deadline + force-destroy instead |
 
 ## Configuration (one visible place, per the MVP PRD)
@@ -191,7 +191,7 @@ topic scheme survives a framing change.
 | Value | Default | Measured from |
 |---|---|---|
 | Boot timeout | conservative (e.g. 60 s) | Provisioner boot call → first join |
-| Max boot attempts | 3 | per Provisioner boot call for the Job; exhaustion ⇒ failed (boot failure) |
+| Max boot attempts | 3 | per Provisioner boot call for the Job; exhaustion ⇒ failed (`boot_failure`) |
 | Grace period | conservative (e.g. 30 s) | channel-process termination |
 | Job timeout (default) | per MVP PRD | `job:started` |
 | Cancel-drain deadline | 10 s | `job:cancel` push / drain start |
