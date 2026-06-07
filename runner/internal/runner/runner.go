@@ -87,9 +87,16 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 	r.log.Info("joined control plane",
 		"protocol_version", joined.ProtocolVersion, "verdict", joined.Verdict)
 
-	if joined.Verdict == "stop" {
+	switch joined.Verdict {
+	case "continue":
+		// Proceed to await assignment.
+	case "stop":
 		// The Job went terminal while we were away — nothing to run.
 		return 0, nil
+	default:
+		// An unknown verdict is a protocol violation — fail fast rather than
+		// hang in awaitAssign for an assignment that may never come.
+		return 1, fmt.Errorf("unsupported join verdict %q", joined.Verdict)
 	}
 
 	assign, err := r.awaitAssign(ctx)

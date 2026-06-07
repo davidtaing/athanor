@@ -83,6 +83,55 @@ func (s *scriptedCP) handle(t *testing.T, ws *websocket.Conn) {
 	}
 }
 
+// TestRunFailsFastOnUnknownJoinVerdict: a verdict outside the catalog
+// ("continue"/"stop") is a protocol violation; the runner must exit
+// deterministically instead of hanging in awaitAssign.
+func TestRunFailsFastOnUnknownJoinVerdict(t *testing.T) {
+	srv := newFakeServer(t, func(t *testing.T, ws *websocket.Conn) {
+		t.Helper()
+		_, raw, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("server read: %v", err)
+		}
+		join := decodeFrame(t, raw)
+		respRaw, _ := json.Marshal(map[string]any{
+			"status": "ok",
+			"response": map[string]any{
+				"protocol_version": "v1",
+				"session_token":    "sess-1",
+				"verdict":          "maybe",
+			},
+		})
+		out := v2Frame{JoinRef: join.JoinRef, Ref: join.Ref, Topic: join.Topic, Event: "phx_reply", Payload: respRaw}
+		if err := ws.WriteMessage(websocket.TextMessage, encodeFrame(t, out)); err != nil {
+			t.Fatalf("server write: %v", err)
+		}
+	})
+	defer srv.Close()
+
+	exec := executor.StubRunner(func(_ context.Context, _ executor.Step) (int, error) {
+		t.Fatal("no step should run on an unknown verdict")
+		return 0, nil
+	})
+
+	r := New(Config{
+		URL:       wsURL(srv.URL),
+		RunnerID:  "runner-1",
+		BootToken: "boot-1",
+	}, exec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	code, err := r.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), `unsupported join verdict "maybe"`) {
+		t.Fatalf("err = %v, want unsupported join verdict", err)
+	}
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+}
+
 func TestRunJobHappyPath(t *testing.T) {
 	cp := &scriptedCP{steps: []string{"step-a", "step-b"}}
 	srv := newFakeServer(t, cp.handle)
