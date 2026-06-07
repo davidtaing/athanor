@@ -51,6 +51,12 @@ defmodule Athanor.Scheduler do
   The count's staleness is one-directional — only the Scheduler moves Jobs into
   active states — so the cap can be momentarily under-used, never exceeded. Jobs
   are taken from the queue head, oldest `queued_at` first.
+
+  A slot is consumed only by a *successful* dispatch: a Job whose `boot`/`assign`
+  fails stays `queued` (moving it out is the recovery slice's job), so the pass
+  keeps scanning the ordered queue until `slots` Jobs dispatch or the queue is
+  exhausted. Were a failed Job to consume a slot, a permanently failing oldest
+  Job would starve every later queued Job — pathological at `cap: 1`.
   """
   def dispatch_queued(opts \\ []) do
     cap = Keyword.get(opts, :cap, max_concurrent_runners())
@@ -63,10 +69,30 @@ defmodule Athanor.Scheduler do
         Job
         |> Ash.Query.filter(state == :queued)
         |> Ash.Query.sort(queued_at: :asc)
-        |> Ash.Query.limit(slots)
         |> Ash.read!()
-        |> Enum.map(&dispatch_job/1)
+        |> dispatch_up_to(slots)
     end
+  end
+
+  # Walk the ordered queue, dispatching until `slots` Jobs have *successfully*
+  # dispatched or the queue is exhausted. Only `{:ok, _}` decrements the
+  # remaining slots; a failed Job is still reported but never costs a slot, so a
+  # stuck oldest Job cannot starve the rest of the queue. Returns the per-Job
+  # result list in queue order, consistent with callers.
+  defp dispatch_up_to(jobs, slots) do
+    {results, _remaining} =
+      Enum.reduce_while(jobs, {[], slots}, fn
+        _job, {results, 0} ->
+          {:halt, {results, 0}}
+
+        job, {results, remaining} ->
+          case dispatch_job(job) do
+            {:ok, _} = ok -> {:cont, {[ok | results], remaining - 1}}
+            {:error, _} = error -> {:cont, {[error | results], remaining}}
+          end
+      end)
+
+    Enum.reverse(results)
   end
 
   # Free slots under the cap. The count is derived from the store, not held in

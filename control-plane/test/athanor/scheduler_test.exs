@@ -7,6 +7,7 @@ defmodule Athanor.SchedulerTest do
   use Athanor.DataCase, async: true
 
   alias Athanor.Pipelines
+  alias Athanor.Pipelines.Runner
   alias Athanor.Provisioner.Recorder
   alias Athanor.Scheduler
 
@@ -150,6 +151,43 @@ defmodule Athanor.SchedulerTest do
 
       assert [{:boot, %{job: booted}}] = Recorder.calls(:boot)
       assert booted.name == "c"
+    end
+
+    test "a failed dispatch never consumes a slot, so a later queued Job still dispatches" do
+      pipeline = pipeline_with_jobs([job("a"), job("b")])
+      jobs = Ash.load!(pipeline, :jobs).jobs
+      a = Enum.find(jobs, &(&1.name == "a"))
+      b = Enum.find(jobs, &(&1.name == "b"))
+
+      # Pin "a" as strictly the oldest queued Job so it is the queue head.
+      a =
+        a
+        |> Ash.Changeset.for_update(:update, %{})
+        |> Ash.Changeset.force_change_attribute(
+          :queued_at,
+          DateTime.add(DateTime.utc_now(), -30, :second)
+        )
+        |> Ash.update!()
+
+      # Make "a" (the oldest queued Job) dispatch fail: pre-create a Runner for
+      # it so the Provisioner's boot violates the unique_job index. No prod code
+      # changes — the failure rides the real data-layer constraint.
+      Runner
+      |> Ash.Changeset.for_create(:boot, %{job_id: a.id})
+      |> Ash.create!()
+
+      # Cap 1: were the failed oldest Job to consume the slot, "b" would starve.
+      Scheduler.dispatch_queued(cap: 1)
+
+      # "a" stays queued (recovery is out of scope), "b" dispatches into the slot.
+      jobs = Ash.load!(pipeline, :jobs, reuse_values?: false).jobs
+      assert Enum.find(jobs, &(&1.name == "a")).state == :queued
+      assert Enum.find(jobs, &(&1.name == "b")).state == :assigned
+
+      # The only successful boot is "b" — the pre-created Runner is not a boot
+      # call recorded by the fake.
+      assert [{:boot, %{job: booted}}] = Recorder.calls(:boot)
+      assert booted.id == b.id
     end
   end
 end
