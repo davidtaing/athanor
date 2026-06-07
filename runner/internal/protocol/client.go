@@ -198,6 +198,16 @@ func (c *Client) request(ctx context.Context, ref, event string, payload json.Ra
 		c.mu.Unlock()
 		return replyResult{}, ctx.Err()
 	case <-c.readDone:
+		// The reply and the close can both be ready when the server replies and
+		// immediately drops the connection (a select over two ready channels picks
+		// pseudo-randomly). readDone closes only after the readLoop — the sole
+		// dispatcher — has returned, so if the reply made it, it is already
+		// buffered in ch: drain it before declaring the connection dead.
+		select {
+		case res := <-ch:
+			return res, nil
+		default:
+		}
 		return replyResult{}, fmt.Errorf("connection closed awaiting reply to %s", event)
 	}
 }

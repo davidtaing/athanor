@@ -243,6 +243,61 @@ func TestPushesClosesOnConnectionClose(t *testing.T) {
 	}
 }
 
+// replyThenCloseConn scripts the reply-vs-close race deterministically: the
+// requester's WriteMessage releases exactly one reply to the readLoop and then
+// BLOCKS until the readLoop has fully exited (readDone closed). By the time
+// request() reaches its select, the buffered reply AND readDone are both ready
+// — the interleaving a real CP produces by acking job:finished and dropping
+// the socket right behind it, but forced on every run instead of left to
+// scheduling luck.
+type replyThenCloseConn struct {
+	c       *Client
+	wrote   chan struct{} // closed by WriteMessage: the request is "on the wire"
+	replied bool          // readLoop is the only ReadMessage caller (serial)
+}
+
+func (f *replyThenCloseConn) ReadMessage() (int, []byte, error) {
+	<-f.wrote
+	if f.replied {
+		return 0, nil, errors.New("connection closed")
+	}
+	f.replied = true
+	respRaw, _ := json.Marshal(map[string]any{"status": "ok", "response": map[string]any{}})
+	out, _ := json.Marshal([]any{nil, "1", "runner:v1:r", "phx_reply", json.RawMessage(respRaw)})
+	return websocket.TextMessage, out, nil
+}
+
+func (f *replyThenCloseConn) WriteMessage(int, []byte) error {
+	close(f.wrote)
+	<-f.c.readDone // hold the requester until the reply is buffered and readDone is closed
+	return nil
+}
+
+func (f *replyThenCloseConn) Close() error { return nil }
+
+// TestReplyDeliveredJustBeforeCloseWins: when the reply and the connection
+// close are both already in by the time request() selects, the delivered reply
+// must win — a select over two ready channels picks pseudo-randomly, so without
+// the readDone drain this fails ~half the runs ("connection closed awaiting
+// reply" for an acked job:finished). Iterations turn the pre-fix coin flip
+// into a near-certain failure.
+func TestReplyDeliveredJustBeforeCloseWins(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		c := NewClient("ws://unused", "r")
+		fc := &replyThenCloseConn{c: c, wrote: make(chan struct{})}
+		c.conn = fc
+		go c.readLoop(fc)
+
+		res, err := c.request(context.Background(), "1", "job:finished", json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatalf("iter %d: request: %v — the delivered reply must win over the close", i, err)
+		}
+		if res.status != "ok" {
+			t.Fatalf("iter %d: reply status = %q, want ok", i, res.status)
+		}
+	}
+}
+
 // --- helpers ---
 
 func newFakeServer(t *testing.T, handle func(*testing.T, *websocket.Conn)) *httptest.Server {
