@@ -155,6 +155,51 @@ func TestJoinRejectedFailsFast(t *testing.T) {
 	}
 }
 
+func TestPushesClosesOnConnectionClose(t *testing.T) {
+	srv := newFakeServer(t, func(t *testing.T, ws *websocket.Conn) {
+		_, raw, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+		f := decodeFrame(t, raw)
+		resp := map[string]any{
+			"status": "ok",
+			"response": map[string]any{
+				"protocol_version": "v1",
+				"session_token":    "sess-xyz",
+				"verdict":          "continue",
+			},
+		}
+		respRaw, _ := json.Marshal(resp)
+		reply := v2Frame{JoinRef: f.JoinRef, Ref: f.Ref, Topic: f.Topic, Event: "phx_reply", Payload: respRaw}
+		_ = ws.WriteMessage(websocket.TextMessage, encodeFrame(t, reply))
+		// Close the WebSocket from the server side; readLoop should observe the
+		// read error and close the pushes channel.
+	})
+	defer srv.Close()
+
+	client := NewClient(wsURL(srv.URL), "runner-1")
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, err := client.JoinWithBootToken(ctx, "boot"); err != nil {
+		t.Fatalf("JoinWithBootToken: %v", err)
+	}
+
+	// The server handler has returned, closing the connection. The pushes
+	// channel must close so consumers see the !ok path rather than blocking.
+	select {
+	case _, ok := <-client.Pushes():
+		if ok {
+			t.Fatal("Pushes() yielded a value, want closed channel on connection close")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Pushes() did not close after the server closed the connection")
+	}
+}
+
 // --- helpers ---
 
 func newFakeServer(t *testing.T, handle func(*testing.T, *websocket.Conn)) *httptest.Server {

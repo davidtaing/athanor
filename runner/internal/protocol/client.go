@@ -192,6 +192,10 @@ func (c *Client) ensureConn(ctx context.Context) error {
 
 func (c *Client) readLoop(conn Conn) {
 	defer close(c.readDone)
+	// dispatch is the only sender on c.pushes and runs only from this loop, so
+	// closing here is race-free and signals connection close to consumers
+	// (e.g. awaitAssign's !ok path).
+	defer close(c.pushes)
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
