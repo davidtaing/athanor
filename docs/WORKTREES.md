@@ -10,7 +10,7 @@ Three persistent worktree slots live as siblings of the main checkout. Each
 slot is a stable directory that gets re-pointed at whatever branch is being
 worked on — slots outlive branches.
 
-```
+```text
 ~/athanor          # main checkout   PORT=4000  debugger 4007  athanor_dev
 ~/athanor-wt1      # slot 1          PORT=4001  debugger 4008  athanor_dev_wt1
 ~/athanor-wt2      # slot 2          PORT=4002  debugger 4009  athanor_dev_wt2
