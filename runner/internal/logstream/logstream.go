@@ -150,14 +150,27 @@ func (s *Streamer) StepWriter(stepIndex int) io.Writer {
 func (s *Streamer) Close(ctx context.Context) error {
 	// If ctx is cancelled at any point, fire the sender's context too: that frees
 	// a backpressured enqueue and a stalled in-flight SendChunk so the sender
-	// goroutine can exit rather than leak.
+	// goroutine can exit rather than leak. The watcher goroutine covers the
+	// whole of Close — without it, a cancel arriving while Flush below is
+	// blocked inside a backpressured enqueue would never reach s.cancel()
+	// (the deferred call only runs once Close is already returning).
+	watcherDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			s.cancel()
+		case <-watcherDone:
+		}
+	}()
+	defer close(watcherDone)
 	defer s.cancel()
 
 	// Flush each Step writer's tail so no buffered bytes are stranded. Each Flush
 	// stops the writer's interval timer and can block on backpressure (enqueue),
-	// so honor ctx between writers — a cancel makes enqueue return and lets us
-	// bail out of the flush loop. These flushes run BEFORE we fire s.closed so
-	// the tail is never dropped (at-least-once on the non-cancelled path).
+	// so honor ctx between writers — the watcher fires s.cancel() on a cancel,
+	// which makes a blocked enqueue return and lets us bail out of the flush
+	// loop. These flushes run BEFORE we fire s.closed so the tail is never
+	// dropped (at-least-once on the non-cancelled path).
 	s.mu.Lock()
 	writers := make([]*stepWriter, len(s.writers))
 	copy(writers, s.writers)
@@ -165,7 +178,6 @@ func (s *Streamer) Close(ctx context.Context) error {
 	for _, w := range writers {
 		select {
 		case <-ctx.Done():
-			s.cancel()
 			return ctx.Err()
 		default:
 		}

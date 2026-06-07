@@ -245,6 +245,52 @@ func TestCloseCancelMidFlightUnblocks(t *testing.T) {
 	}
 }
 
+// TestCloseCancelUnblocksBackpressuredTailFlush pins the ctx-watcher in Close:
+// the writer holds buffered tail data while MaxUnacked is already exhausted by
+// never-acked sends, so Close blocks INSIDE w.Flush()'s enqueue (not between
+// writers, and not on the drain). A cancel arriving at that point must still
+// unblock Close — before the watcher, s.cancel() only ran via defer, which a
+// Close stuck in Flush never reached.
+func TestCloseCancelUnblocksBackpressuredTailFlush(t *testing.T) {
+	gate := make(chan struct{}) // never released: the CP never acks
+	snd := &fakeSender{gate: gate}
+	s := New(snd, Config{MaxBytes: 2, MaxInterval: time.Hour, MaxUnacked: 1})
+
+	w := s.StepWriter(0)
+	// One full chunk fills MaxUnacked with a gated, never-acked in-flight send.
+	// (Writing more would block THIS goroutine in the write-path flush — the
+	// backpressure must be left for Close's tail flush to hit, not the test.)
+	_, _ = w.Write([]byte("aa"))
+	_, _ = w.Write([]byte("c")) // buffered tail (< MaxBytes, no flush yet)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close(ctx) }()
+
+	// Close should now be blocked inside the tail flush's enqueue.
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the tail flush should be backpressured")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-closed:
+		if err == nil {
+			t.Fatal("Close returned nil, want a cancellation error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not unblock after cancel during a backpressured tail flush")
+	}
+
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sender goroutine did not exit after cancel during tail flush")
+	}
+}
+
 // TestCloseRacesConcurrentTimerFlushes hammers Close against a flurry of
 // timer-driven flushes: a tiny MaxInterval means a flush callback is very likely
 // to be inside enqueue exactly when Close stops the producers and closes the

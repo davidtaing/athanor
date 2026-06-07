@@ -47,15 +47,16 @@ case config_env() do
 
     # Reject blank as well as missing: System.fetch_env! accepts a set-but-empty
     # var (""), which would silently configure an unusable object store. There is
-    # no safe default for a real store, so a blank value must fail loudly here.
+    # no safe default for a real store, so a blank (incl. whitespace-only) value
+    # must fail loudly here.
     require_minio_env! = fn name ->
-      case System.get_env(name) do
-        value when value not in [nil, ""] ->
-          value
+      value = System.get_env(name)
 
-        _ ->
-          raise "environment variable #{name} is missing or empty. " <>
-                  "It is required (non-blank) in prod to configure the object store (ADR 0004)."
+      if is_binary(value) and String.trim(value) != "" do
+        value
+      else
+        raise "environment variable #{name} is missing or blank. " <>
+                "It is required (non-blank) in prod to configure the object store (ADR 0004)."
       end
     end
 

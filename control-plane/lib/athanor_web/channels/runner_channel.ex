@@ -150,7 +150,8 @@ defmodule AthanorWeb.RunnerChannel do
         %{"seq" => seq, "step_index" => step_index, "content" => content},
         socket
       )
-      when is_integer(seq) and is_integer(step_index) and is_binary(content) do
+      when is_integer(seq) and is_integer(step_index) and step_index >= 0 and
+             is_binary(content) do
     # Liberal receiver (PRD log-streaming): any seq is accepted — the Channel
     # holds no per-Job seq state (ADR 0002). The chunk is broadcast for live
     # tail, then handed to the LogStore; the ack is sent only after a durable
