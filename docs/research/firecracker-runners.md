@@ -303,11 +303,20 @@ The destroy path is already fire-and-forget idempotent in the protocol design
 (`job:finished` re-drives destroy on duplicates); the Firecracker Provisioner
 must make each of these steps individually idempotent the same way. And
 because the Provisioner can die between boot and destroy, it needs an **orphan
-sweep at startup** — enumerate `tap*` devices and jailer chroot dirs, reconcile
-against live Runners in Postgres, destroy the rest. This is the same
-deadline-sweep philosophy the Scheduler already uses, applied to host
-resources, and it's a genuinely interesting slice of the coordination problem
-this project exists to explore.
+sweep at startup** — which is only safe if boot bookkeeping persists a
+**deterministic host-resource↔Runner identity contract**: the concrete
+handles (TAP device name, chroot path, cgroup path, VMM PID and API-socket
+path) recorded on the Runner row as boot creates each one. This is ADR 0002
+applied to host resources — Postgres owns the truth, including the truth
+about which TAP belongs to which Runner. The sweep then enumerates host
+resources (`tap*` devices, jailer chroot dirs, per-VM cgroups) and reconciles
+each against those exact persisted keys — never name-pattern heuristics:
+destroy anything with no owning row or whose Runner is terminal; skip
+anything keyed to a live Runner. Without the persisted handles, a
+restart-time sweep can reap a live VM or miss a leaked one whose name
+drifted. This is the same deadline-sweep philosophy the Scheduler already
+uses, applied to host resources, and it's a genuinely interesting slice of
+the coordination problem this project exists to explore.
 
 ---
 
@@ -316,15 +325,19 @@ this project exists to explore.
 The swap is well-bounded. Unchanged: the Runner protocol, Boot Token
 lifecycle, Job state machine, scheduler, and the Provisioner behaviour's
 contract. Changed: the behaviour's implementation, which grows from "ask
-dockerd" to owning five concrete responsibilities —
+dockerd" into five concrete responsibilities —
 
 1. **Image store**: per-toolchain ext4 rootfs built offline from the existing
    Docker images, plus one CI-prebuilt kernel.
 2. **Boot**: allocate index N → TAP + /30 → chroot + hardlinks + rootfs copy →
    jailer exec → configure over the API socket → InstanceStart, with the Boot
-   Token on the kernel cmdline (later MMDS).
-3. **Destroy**: the idempotent five-row cleanup table above.
-4. **Orphan sweep** at startup.
+   Token on the kernel cmdline (later MMDS) — persisting each host handle
+   (TAP name, chroot path, cgroup path, PID/socket path) on the Runner row as
+   it is created.
+3. **Destroy**: the idempotent five-row cleanup table above, driven by the
+   persisted handles.
+4. **Orphan sweep** at startup, reconciling enumerated host resources against
+   the persisted handles by exact key (§7).
 5. **Cold-start instrumentation** (boot→first-join), which then decides
    whether the snapshot/warm-pool slice is ever worth building.
 
