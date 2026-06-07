@@ -27,9 +27,17 @@ dependent Job is skipped.
 _Avoid_: Stage ordering, needs (as a noun)
 
 **Step**:
-An ordered command inside a Job. Not a scheduled entity — has no independent
-state and is never dispatched on its own.
+An ordered, optionally named command inside a Job. Not a scheduled entity — has
+no independent state and is never dispatched on its own. The `name` is for
+display only and falls back to the `command` when absent.
 _Avoid_: Stage, command
+
+**Definition**:
+The user-authored description of a Pipeline that a Trigger submits — its Jobs,
+their Dependencies, and each Job's Steps and `env`. Notation-independent: a JSON
+API body in the MVP, in-repo YAML later, with the same schema either way.
+Validated at submission, before any Runner is booted.
+_Avoid_: Config, spec, manifest, pipeline file
 
 ## Job lifecycle
 
