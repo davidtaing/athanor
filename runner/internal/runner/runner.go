@@ -313,8 +313,18 @@ func (r *Runner) runJob(ctx context.Context, assign assignPayload, streamer *log
 		// under step_index 0 — the clone is the Job's first observable work,
 		// ahead of any Step (PRD log-streaming). A write-to-stream failure must
 		// not mask the clone-failure path below, so log and continue.
-		if _, err := fmt.Fprint(streamer.StepWriter(0), cloneRes.Output); err != nil {
+		cloneW := streamer.StepWriter(0)
+		if _, err := fmt.Fprint(cloneW, cloneRes.Output); err != nil {
 			r.log.Warn("failed to stream clone output", "err", err)
+		}
+		// Flush the clone writer's tail before any Step runs. The clone writer is a
+		// separate buffered writer from the one runSteps installs for step 0; if
+		// clone output is under max_bytes it would otherwise sit buffered while
+		// step 0 emits a full chunk first, taking a lower seq — sealing the log out
+		// of execution order. Flushing here pins the invariant: clone output always
+		// sequences before step output.
+		if f, ok := cloneW.(interface{ Flush() }); ok {
+			f.Flush()
 		}
 	}
 	if cloneRes.Err != nil {

@@ -2,6 +2,7 @@ package logstream
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -300,11 +301,13 @@ func TestCloseCancelUnblocksBackpressuredTailFlush(t *testing.T) {
 func TestCloseRacesConcurrentTimerFlushes(t *testing.T) {
 	for iter := 0; iter < 50; iter++ {
 		snd := &fakeSender{}
-		// Sub-millisecond interval + 1-byte cap so every write arms a timer that
-		// fires almost immediately, maximising the chance a callback is mid-enqueue
-		// when Close runs.
+		// MaxBytes far above what the writers produce, so the byte cap NEVER
+		// flushes — every flush is driven by the sub-millisecond interval timer.
+		// (With a small cap each Write would flush synchronously and
+		// armTimerLocked would never run, leaving the timer-callback-vs-Close
+		// race — the one that used to panic — untested.)
 		s := New(snd, Config{
-			MaxBytes:    1,
+			MaxBytes:    1 << 20,
 			MaxInterval: 100 * time.Microsecond,
 			MaxUnacked:  4,
 		})
@@ -337,6 +340,50 @@ func TestCloseRacesConcurrentTimerFlushes(t *testing.T) {
 		}
 		close(stop)
 		writers.Wait()
+	}
+}
+
+// failSender fails every SendChunk outright (a control plane that rejects the
+// chunk rather than stalling).
+type failSender struct{ err error }
+
+func (f *failSender) SendChunk(ctx context.Context, c Chunk) error { return f.err }
+
+// TestSendErrorFailsFast pins the genuine-send-failure semantics: the failed
+// chunk's permit is NOT released (releasing it would be indistinguishable from
+// an ack and let producers run on while the chunk is silently lost); instead
+// the stream context is cancelled so backpressured writers unwind, and Close
+// surfaces the error.
+func TestSendErrorFailsFast(t *testing.T) {
+	sendErr := errors.New("control plane rejected the chunk")
+	snd := &failSender{err: sendErr}
+	s := New(snd, Config{MaxBytes: 1, MaxInterval: time.Hour, MaxUnacked: 1})
+
+	w := s.StepWriter(0)
+	// The first write's chunk fails to send; its permit stays held, so the
+	// second write would backpressure forever unless the failure's cancel
+	// unwinds it.
+	wrote := make(chan struct{})
+	go func() {
+		defer close(wrote)
+		_, _ = w.Write([]byte("a"))
+		_, _ = w.Write([]byte("b"))
+	}()
+
+	select {
+	case <-wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer stayed blocked after a send failure — fail-fast cancel did not unwind it")
+	}
+
+	if err := s.Close(context.Background()); !errors.Is(err, sendErr) {
+		t.Fatalf("Close returned %v, want the send error %v", err, sendErr)
+	}
+
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sender goroutine did not exit after a send failure")
 	}
 }
 

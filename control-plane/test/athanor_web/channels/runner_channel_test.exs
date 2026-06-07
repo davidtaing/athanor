@@ -367,9 +367,8 @@ defmodule AthanorWeb.RunnerChannelTest do
       push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "early"})
       |> assert_reply(:error, %{reason: "try_again"})
 
-      # The Channel is still alive: complete the deferred assign, then a well-formed
-      # chunk acks.
-      assert Process.alive?(channel_pid)
+      # The Channel survived the early chunk: completing the deferred assign and
+      # acking a well-formed chunk below prove it without a racy liveness probe.
       send(channel_pid, {:do_assign, channel_runner})
       assert_push "job:assign", _payload
 

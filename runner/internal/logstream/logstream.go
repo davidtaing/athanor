@@ -260,12 +260,27 @@ func (s *Streamer) run() {
 		}
 
 		if err := s.sender.SendChunk(s.cctx, c); err != nil {
+			if s.cctx.Err() != nil {
+				// Cancelled (stalled-CP escape hatch): the in-flight SendChunk was
+				// unwound by Close's s.cancel(). Keep prior semantics — release the
+				// permit so any backpressured producer unwinds, record the cancel
+				// error, and exit.
+				s.errOnce.Do(func() { s.sendErr = err })
+				<-s.inflight
+				return
+			}
+			// Genuine send failure: the chunk was NOT durably accepted. Releasing
+			// the permit here would make this indistinguishable from an ack and let
+			// producers keep going while the chunk is silently lost. Instead:
+			// record the error, do NOT release this chunk's permit, stop the send
+			// loop, and cancel the stream context so backpressured producers unwind
+			// and Close surfaces the error (fail-fast, never silent loss).
 			s.errOnce.Do(func() { s.sendErr = err })
-			// Keep draining so writers don't deadlock; the error is surfaced
-			// from Close. (The runner treats a send error as fatal anyway.)
+			s.cancel()
+			return
 		}
-		// Ack received (or send cancelled): release the in-flight permit, freeing a
-		// backpressured writer (PRD: the connection returning releases the stall).
+		// Ack received: release the in-flight permit, freeing a backpressured
+		// writer (PRD: the connection returning releases the stall).
 		<-s.inflight
 	}
 }
