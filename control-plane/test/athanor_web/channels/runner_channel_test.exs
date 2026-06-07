@@ -43,6 +43,19 @@ defmodule AthanorWeb.RunnerChannelTest do
     Ash.get!(Athanor.Pipelines.Job, job_id).state
   end
 
+  # The terminal-state destroy fires as a supervised Task, so poll the recorder
+  # briefly rather than asserting synchronously.
+  defp eventually_destroyed?(runner_id, attempts \\ 50) do
+    destroyed? =
+      Enum.any?(Recorder.calls(:destroy), fn {:destroy, %{runner: r}} -> r.id == runner_id end)
+
+    cond do
+      destroyed? -> true
+      attempts == 0 -> false
+      true -> :timer.sleep(20) && eventually_destroyed?(runner_id, attempts - 1)
+    end
+  end
+
   describe "join with a Boot Token" do
     test "first join burns the token and replies with protocol version and a session token", %{
       runner: runner
@@ -149,6 +162,27 @@ defmodule AthanorWeb.RunnerChannelTest do
       push(socket, "job:finished", %{"exit_code" => 0}) |> assert_reply(:ok)
       push(socket, "job:finished", %{"exit_code" => 0}) |> assert_reply(:ok)
       assert job_state(job.id) == :succeeded
+    end
+
+    test "reaching a terminal state destroys the Runner — the ephemeral container is reaped", %{
+      socket: socket,
+      runner: runner
+    } do
+      push(socket, "job:started", %{}) |> assert_reply(:ok)
+      push(socket, "job:finished", %{"exit_code" => 0}) |> assert_reply(:ok)
+
+      # Destroy runs as a supervised fire-and-forget Task (docs/supervision-tree),
+      # so it lands shortly after the reply; poll the recorder briefly.
+      assert eventually_destroyed?(runner.id)
+    end
+
+    test "a failed Job also destroys the Runner — destroyed after any terminal state", %{
+      socket: socket,
+      runner: runner
+    } do
+      push(socket, "job:started", %{}) |> assert_reply(:ok)
+      push(socket, "job:finished", %{"exit_code" => 1}) |> assert_reply(:ok)
+      assert eventually_destroyed?(runner.id)
     end
 
     test "each transition is persisted and timestamped — survives a fresh read", %{
