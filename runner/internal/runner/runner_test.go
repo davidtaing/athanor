@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,7 +140,9 @@ func TestRunFailsFastOnUnknownJoinVerdict(t *testing.T) {
 // TestRunExitsNonzeroOnInvalidCredentials: an invalid_credentials rejection is
 // fatal — the runner exits nonzero immediately, without retrying (PRD #35).
 func TestRunExitsNonzeroOnInvalidCredentials(t *testing.T) {
-	var joinAttempts int
+	// joinAttempts is written by the fake server goroutine and read by the test
+	// goroutine — atomic to stay race-free under `go test -race`.
+	var joinAttempts atomic.Int64
 	srv := newFakeServer(t, func(t *testing.T, ws *websocket.Conn) {
 		t.Helper()
 		for {
@@ -148,7 +151,7 @@ func TestRunExitsNonzeroOnInvalidCredentials(t *testing.T) {
 				return
 			}
 			f := decodeFrame(t, raw)
-			joinAttempts++
+			joinAttempts.Add(1)
 			respRaw, _ := json.Marshal(map[string]any{
 				"status": "error",
 				"response": map[string]any{
@@ -180,8 +183,8 @@ func TestRunExitsNonzeroOnInvalidCredentials(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
-	if joinAttempts != 1 {
-		t.Fatalf("join attempts = %d, want 1 — invalid_credentials must not retry", joinAttempts)
+	if got := joinAttempts.Load(); got != 1 {
+		t.Fatalf("join attempts = %d, want 1 — invalid_credentials must not retry", got)
 	}
 }
 
@@ -191,18 +194,20 @@ func TestRunRetriesOnTryAgain(t *testing.T) {
 	const rejectTimes = 2
 	cp := &scriptedCP{steps: []map[string]any{{"command": "make"}}}
 
-	var joinAttempts int
+	// joinAttempts is written by the fake server goroutine and read by the test
+	// goroutine — atomic to stay race-free under `go test -race`.
+	var joinAttempts atomic.Int64
 	srv := newFakeServer(t, func(t *testing.T, ws *websocket.Conn) {
 		t.Helper()
 		// Reject the first `rejectTimes` joins with try_again, then run the full
 		// happy path on the next join.
-		for joinAttempts < rejectTimes {
+		for joinAttempts.Load() < rejectTimes {
 			_, raw, err := ws.ReadMessage()
 			if err != nil {
 				return
 			}
 			f := decodeFrame(t, raw)
-			joinAttempts++
+			joinAttempts.Add(1)
 			respRaw, _ := json.Marshal(map[string]any{
 				"status": "error",
 				"response": map[string]any{
@@ -213,7 +218,7 @@ func TestRunRetriesOnTryAgain(t *testing.T) {
 			out := v2Frame{JoinRef: f.JoinRef, Ref: f.Ref, Topic: f.Topic, Event: "phx_reply", Payload: respRaw}
 			_ = ws.WriteMessage(websocket.TextMessage, encodeFrame(t, out))
 		}
-		joinAttempts++
+		joinAttempts.Add(1)
 		cp.handle(t, ws)
 	})
 	defer srv.Close()
@@ -233,8 +238,8 @@ func TestRunRetriesOnTryAgain(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if joinAttempts != rejectTimes+1 {
-		t.Fatalf("join attempts = %d, want %d (retried past the try_agains)", joinAttempts, rejectTimes+1)
+	if got := joinAttempts.Load(); got != rejectTimes+1 {
+		t.Fatalf("join attempts = %d, want %d (retried past the try_agains)", got, rejectTimes+1)
 	}
 }
 
