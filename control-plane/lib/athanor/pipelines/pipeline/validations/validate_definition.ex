@@ -6,6 +6,9 @@ defmodule Athanor.Pipelines.Pipeline.Validations.ValidateDefinition do
 
     * a Pipeline with no Jobs, or any Job missing a name or image;
     * duplicate Job names within the Pipeline;
+    * a Step that is not an object `{command (required), name (optional)}` —
+      a bare shell string, a missing `command`, or any unknown key (PRD #35);
+    * an `env` that is not a flat string→string map (PRD #35);
     * a Dependency (`needs`) pointing at a Job name not present in the Pipeline
       (dangling dependency);
     * a Dependency cycle in the Job DAG.
@@ -20,6 +23,8 @@ defmodule Athanor.Pipelines.Pipeline.Validations.ValidateDefinition do
 
     with :ok <- validate_non_empty(jobs),
          {:ok, names} <- validate_jobs_present(jobs),
+         :ok <- validate_steps(jobs),
+         :ok <- validate_envs(jobs),
          :ok <- validate_dependencies(jobs, names) do
       validate_acyclic(jobs)
     end
@@ -48,6 +53,64 @@ defmodule Athanor.Pipelines.Pipeline.Validations.ValidateDefinition do
         {:ok, MapSet.new(names)}
     end
   end
+
+  # Each Step is an object: `command` (required string), `name` (optional
+  # string), no other keys. A bare shell string is rejected (PRD #35).
+  defp validate_steps(jobs) do
+    Enum.reduce_while(jobs, :ok, fn job, :ok ->
+      steps = fetch(job, :steps) || []
+
+      case Enum.find_value(steps, &step_error/1) do
+        nil -> {:cont, :ok}
+        message -> {:halt, error(message)}
+      end
+    end)
+  end
+
+  defp step_error(step) when is_map(step) do
+    command = Map.get(step, :command) || Map.get(step, "command")
+
+    cond do
+      not is_binary(command) or command == "" ->
+        "every Step must have a non-empty string command"
+
+      unknown_step_keys?(step) ->
+        "a Step may only have the keys command and name"
+
+      name = Map.get(step, :name) || Map.get(step, "name") ->
+        if is_binary(name),
+          do: nil,
+          else: "a Step name must be a string"
+
+      true ->
+        nil
+    end
+  end
+
+  defp step_error(_step), do: "every Step must be an object with a command, not a bare string"
+
+  defp unknown_step_keys?(step) do
+    Enum.any?(Map.keys(step), &(to_string(&1) not in ["command", "name"]))
+  end
+
+  # `env` is a flat map with string keys and string values (PRD #35).
+  defp validate_envs(jobs) do
+    Enum.reduce_while(jobs, :ok, fn job, :ok ->
+      env = fetch(job, :env)
+
+      cond do
+        is_nil(env) -> {:cont, :ok}
+        flat_string_map?(env) -> {:cont, :ok}
+        true -> {:halt, error("Job env must be a flat map of string keys to string values")}
+      end
+    end)
+  end
+
+  defp flat_string_map?(env) when is_map(env) do
+    Enum.all?(env, fn {k, v} -> is_binary(k) and is_binary(v) end)
+  end
+
+  defp flat_string_map?(_env), do: false
 
   defp validate_dependencies(jobs, names) do
     dangling =

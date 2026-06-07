@@ -24,7 +24,7 @@ defmodule AthanorWeb.RunnerChannelTest do
       Pipelines.create_pipeline(%{
         git_url: "https://github.com/example/repo.git",
         git_ref: "main",
-        jobs: [%{name: "build", image: "alpine:3", steps: ["make"]}]
+        jobs: [%{name: "build", image: "alpine:3", steps: [%{"command" => "make"}]}]
       })
 
     [job] = Ash.load!(pipeline, :jobs).jobs
@@ -93,7 +93,7 @@ defmodule AthanorWeb.RunnerChannelTest do
       assert is_binary(payload.job_id)
       assert payload.git_url == "https://github.com/example/repo.git"
       assert payload.git_ref == "main"
-      assert payload.steps == ["make"]
+      assert payload.steps == [%{"command" => "make"}]
       assert %{max_bytes: _, max_interval: _} = payload.log
     end
 

@@ -127,8 +127,12 @@ defmodule Athanor.Pipelines.Job do
 
     attribute :image, :string, allow_nil?: false
 
-    # Ordered shell commands. Steps have no independent state (glossary).
-    attribute :steps, {:array, :string}, allow_nil?: false, default: []
+    # Ordered Steps: each is an object `%{"command" => string, "name" => string?}`
+    # (PRD #35). The `command` is the shell command; `name` is an optional display
+    # name (display falls back to `command`). Steps have no independent state
+    # (glossary). The Definition is validated before any Job is written, so by the
+    # time a Step reaches storage it is already a well-formed object.
+    attribute :steps, {:array, :map}, allow_nil?: false, default: []
 
     # Plain environment variables made available to the Job's Steps.
     attribute :env, :map, allow_nil?: false, default: %{}
