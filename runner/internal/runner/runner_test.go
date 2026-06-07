@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,8 +12,18 @@ import (
 	"time"
 
 	"github.com/davidtaing/athanor/runner/internal/executor"
+	"github.com/davidtaing/athanor/runner/internal/workspace"
 	"github.com/gorilla/websocket"
 )
+
+// stubClone makes a Runner's clone succeed without touching the network: tests
+// that drive the protocol path but don't exercise real git stub it so the
+// scripted (non-real) git_url is never actually cloned.
+func stubClone(r *Runner) {
+	r.clone = func(_ context.Context, _ workspace.Spec) workspace.Result {
+		return workspace.Result{}
+	}
+}
 
 // scriptedCP is a fake control plane that drives the full v1 protocol path:
 // reply to join, push job:assign (with Step objects), ack job:ack, job:started
@@ -85,6 +96,95 @@ func (s *scriptedCP) handle(t *testing.T, ws *websocket.Conn) {
 		default:
 			t.Fatalf("unexpected client event %q", f.Event)
 		}
+	}
+}
+
+// TestRunCloneFailureFailsJobWithoutRunningSteps: a clone failure (bad URL,
+// unknown ref) fails the Job cleanly — no Step runs, and job:finished still
+// reports a nonzero exit so the control plane derives a failed verdict and the
+// Provisioner destroys the container (issue #7).
+func TestRunCloneFailureFailsJobWithoutRunningSteps(t *testing.T) {
+	cp := &scriptedCP{steps: []map[string]any{{"command": "never-runs"}}}
+	srv := newFakeServer(t, cp.handle)
+	defer srv.Close()
+
+	exec := executor.StubRunner(func(_ context.Context, _ executor.Step) (int, error) {
+		t.Fatal("no Step should run when the clone fails")
+		return 0, nil
+	})
+
+	r := New(Config{URL: wsURL(srv.URL), RunnerID: "runner-1", BootToken: "boot-1"}, exec)
+	r.clone = func(_ context.Context, _ workspace.Spec) workspace.Result {
+		return workspace.Result{Output: "fatal: repository not found\n", Err: errors.New("git clone failed")}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	code, err := r.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v — a clone failure is reported via exit code, not a transport error", err)
+	}
+	if code == 0 {
+		t.Fatalf("exit code = %d, want nonzero for a failed clone", code)
+	}
+
+	wantOrder := []string{"phx_join", "job:ack", "job:started", "job:finished"}
+	if strings.Join(cp.gotEvents, ",") != strings.Join(wantOrder, ",") {
+		t.Fatalf("event order = %v, want %v", cp.gotEvents, wantOrder)
+	}
+
+	var fin struct {
+		ExitCode int `json:"exit_code"`
+	}
+	if err := json.Unmarshal(cp.finishedRaw, &fin); err != nil {
+		t.Fatalf("decode finished: %v", err)
+	}
+	if fin.ExitCode == 0 {
+		t.Errorf("finished exit_code = %d, want nonzero", fin.ExitCode)
+	}
+}
+
+// TestRunClonesIntoWorkspaceAndRunsStepsThere: on a successful clone the runner
+// runs Steps with the cloned workspace as their working directory (issue #7).
+func TestRunClonesIntoWorkspaceAndRunsStepsThere(t *testing.T) {
+	cp := &scriptedCP{steps: []map[string]any{{"command": "step-a"}}}
+	srv := newFakeServer(t, cp.handle)
+	defer srv.Close()
+
+	var clonedSpec workspace.Spec
+	var stepDir string
+	exec := executor.StubRunner(func(_ context.Context, st executor.Step) (int, error) {
+		_ = st
+		return 0, nil
+	})
+
+	r := New(Config{URL: wsURL(srv.URL), RunnerID: "runner-1", BootToken: "boot-1"}, exec)
+	r.clone = func(_ context.Context, spec workspace.Spec) workspace.Result {
+		clonedSpec = spec
+		return workspace.Result{}
+	}
+	// Capture the working directory the runner builds Steps against.
+	r.runnerFor = func(dir string) executor.StepRunner {
+		stepDir = dir
+		return exec
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	code, err := r.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if clonedSpec.URL != "https://example.com/repo.git" || clonedSpec.Ref != "main" {
+		t.Fatalf("clone spec = %+v, want the assign's git_url/git_ref", clonedSpec)
+	}
+	if clonedSpec.Dir == "" || stepDir != clonedSpec.Dir {
+		t.Fatalf("Steps ran in %q, want the cloned workspace dir %q", stepDir, clonedSpec.Dir)
 	}
 }
 
@@ -227,6 +327,7 @@ func TestRunRetriesOnTryAgain(t *testing.T) {
 
 	r := New(Config{URL: wsURL(srv.URL), RunnerID: "runner-1", BootToken: "boot-1"}, exec)
 	r.joinBackoff = time.Millisecond
+	stubClone(r)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -262,6 +363,7 @@ func TestRunJobHappyPath(t *testing.T) {
 		RunnerID:  "runner-1",
 		BootToken: "boot-1",
 	}, exec)
+	stubClone(r)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -318,6 +420,7 @@ func TestRunJobFailingStepReportsNonzeroAndStops(t *testing.T) {
 	})
 
 	r := New(Config{URL: wsURL(srv.URL), RunnerID: "runner-1", BootToken: "boot-1"}, exec)
+	stubClone(r)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
