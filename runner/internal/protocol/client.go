@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"sync"
@@ -234,6 +235,11 @@ func (c *Client) dispatch(raw []byte) {
 	select {
 	case c.pushes <- Push{Event: event, Payload: payload}:
 	default:
+		// Buffer (cap 16) is full: the consumer is not draining fast enough.
+		// We drop the push rather than block the readLoop. Logging the drop
+		// makes it visible; backpressure/blocking is deferred to issue #8,
+		// once push volume (log:chunk) is real.
+		log.Printf("protocol: dropped server push, buffer full (event=%s topic=%s)", event, c.Topic())
 	}
 }
 
