@@ -11,7 +11,7 @@ defmodule Athanor.SchedulerTest do
   alias Athanor.Scheduler
 
   setup do
-    Recorder.start_link()
+    start_supervised!(Recorder)
     :ok
   end
 

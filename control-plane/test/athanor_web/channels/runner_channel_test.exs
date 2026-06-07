@@ -18,7 +18,7 @@ defmodule AthanorWeb.RunnerChannelTest do
   # fake Provisioner), and surface the Job and the booted Runner (with its
   # plain Boot Token) into the test context.
   setup do
-    Recorder.start_link()
+    start_supervised!(Recorder)
 
     {:ok, pipeline} =
       Pipelines.create_pipeline(%{
@@ -127,6 +127,18 @@ defmodule AthanorWeb.RunnerChannelTest do
       reloaded = Ash.get!(Athanor.Pipelines.Job, job.id)
       assert reloaded.state == :failed
       assert reloaded.failure_reason == :nonzero_exit
+    end
+
+    test "a malformed job:finished (missing/non-integer exit_code) is rejected, Job stays running",
+         %{socket: socket, job: job} do
+      push(socket, "job:started", %{}) |> assert_reply(:ok)
+
+      push(socket, "job:finished", %{}) |> assert_reply(:error, %{reason: "invalid_payload"})
+
+      push(socket, "job:finished", %{"exit_code" => "0"})
+      |> assert_reply(:error, %{reason: "invalid_payload"})
+
+      assert job_state(job.id) == :running
     end
 
     test "duplicate job:finished is acked and ignored, never an error", %{

@@ -24,7 +24,10 @@ defmodule Athanor.Application do
       {AshAuthentication.Supervisor, [otp_app: :athanor]},
       # Singleton dispatcher: queued Jobs -> Provisioner boot -> assigned
       # (docs/supervision-tree.md). Holds no state; rebuildable from the store.
-      Athanor.Scheduler
+      Athanor.Scheduler,
+      # One supervised, short-lived Task per Provisioner boot/destroy call
+      # (docs/supervision-tree.md). Holds no state; unused until issue #6.
+      {Task.Supervisor, name: Athanor.Provisioner.TaskSupervisor}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

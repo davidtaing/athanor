@@ -16,13 +16,17 @@ defmodule Athanor.Provisioner.Fake do
 
   @impl true
   def boot(job) do
-    {:ok, runner} =
-      Runner
-      |> Ash.Changeset.for_create(:boot, %{job_id: job.id})
-      |> Ash.create()
+    Runner
+    |> Ash.Changeset.for_create(:boot, %{job_id: job.id})
+    |> Ash.create()
+    |> case do
+      {:ok, runner} ->
+        Recorder.record(:boot, job: job, runner: runner)
+        {:ok, runner}
 
-    Recorder.record(:boot, job: job, runner: runner)
-    {:ok, runner}
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @impl true

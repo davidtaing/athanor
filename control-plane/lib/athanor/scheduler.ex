@@ -16,6 +16,7 @@ defmodule Athanor.Scheduler do
   use GenServer
 
   require Ash.Query
+  require Logger
 
   alias Athanor.Pipelines.Job
   alias Athanor.Provisioner
@@ -34,8 +35,9 @@ defmodule Athanor.Scheduler do
 
   @doc """
   Dispatch every currently-queued Job: boot a Runner for each and move it to
-  `assigned`. Returns the assigned Jobs. The public operation the GenServer
-  runs and tests drive directly.
+  `assigned`. Returns a per-Job `{:ok, job}` / `{:error, %{job_id:, reason:}}`
+  list — one failing Job never aborts the pass for the rest. The public
+  operation the GenServer runs and tests drive directly.
   """
   def dispatch_queued do
     Job
@@ -45,11 +47,21 @@ defmodule Athanor.Scheduler do
   end
 
   defp dispatch_job(job) do
-    {:ok, _runner} = Provisioner.boot(job)
-
-    job
-    |> Ash.Changeset.for_update(:assign)
-    |> Ash.update!()
+    # The Scheduler is a singleton (docs/supervision-tree.md): one bad Job must
+    # not crash it and abort the dispatch pass for every other queued Job. Boot
+    # then assign stays in this order by design — serialized dispatch means
+    # there is no race to guard against by reordering.
+    with {:ok, _runner} <- Provisioner.boot(job),
+         {:ok, assigned} <-
+           job
+           |> Ash.Changeset.for_update(:assign)
+           |> Ash.update() do
+      {:ok, assigned}
+    else
+      {:error, reason} ->
+        Logger.error("scheduler dispatch failed for job #{job.id}: #{inspect(reason)}")
+        {:error, %{job_id: job.id, reason: reason}}
+    end
   end
 
   @impl true

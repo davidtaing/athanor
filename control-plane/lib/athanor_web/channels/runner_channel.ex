@@ -16,6 +16,8 @@ defmodule AthanorWeb.RunnerChannel do
   """
   use Phoenix.Channel
 
+  require Logger
+
   alias Athanor.Pipelines.Runner
 
   @protocol_version "v1"
@@ -62,23 +64,27 @@ defmodule AthanorWeb.RunnerChannel do
     # Drives assigned -> running; duplicate on an already-running (or terminal)
     # Job is ack-and-ignore (invariant 2).
     transition_or_ignore(socket, :start)
-    {:reply, :ok, socket}
   end
 
-  def handle_in("job:finished", params, socket) do
-    # Facts only — no verdict crosses the wire. The control plane derives it.
-    exit_code = Map.get(params, "exit_code", 0)
-
-    result =
+  def handle_in("job:finished", %{"exit_code" => exit_code}, socket)
+      when is_integer(exit_code) do
+    # Facts only — no verdict crosses the wire. The control plane derives it
+    # (exit 0 ⇒ succeeded; nonzero ⇒ failed, reason nonzero_exit).
+    {action, args} =
       if exit_code == 0 do
         {:succeed, []}
       else
         {:fail, [failure_reason: :nonzero_exit]}
       end
 
-    {action, args} = result
     transition_or_ignore(socket, action, args)
-    {:reply, :ok, socket}
+  end
+
+  def handle_in("job:finished", _params, socket) do
+    # A malformed payload (missing / non-integer exit_code) carries no fact we
+    # can derive a verdict from; reject it without touching Job state rather
+    # than silently counting it as success.
+    {:reply, {:error, %{reason: "invalid_payload"}}, socket}
   end
 
   # --- internals ---
@@ -138,11 +144,34 @@ defmodule AthanorWeb.RunnerChannel do
     |> Ash.Changeset.for_update(action, Map.new(args))
     |> Ash.update()
     |> case do
-      {:ok, _job} -> :ok
+      {:ok, _job} ->
+        {:reply, :ok, socket}
+
       # A duplicate transition (already running / already terminal) is rejected
-      # by the state machine; the protocol says ack-and-ignore, not error.
-      {:error, _reason} -> :ok
+      # by the state machine with NoMatchingTransition; the protocol says
+      # ack-and-ignore that one case, not error.
+      {:error, %Ash.Error.Invalid{} = error} = result ->
+        if no_matching_transition?(error) do
+          {:reply, :ok, socket}
+        else
+          unexpected_transition_error(socket, action, result)
+        end
+
+      result ->
+        unexpected_transition_error(socket, action, result)
     end
+  end
+
+  defp no_matching_transition?(%Ash.Error.Invalid{errors: errors}) do
+    Enum.any?(errors, fn
+      %AshStateMachine.Errors.NoMatchingTransition{} -> true
+      _ -> false
+    end)
+  end
+
+  defp unexpected_transition_error(socket, action, result) do
+    Logger.error("runner_channel #{action} failed: #{inspect(result)}")
+    {:reply, {:error, %{reason: "transition_failed"}}, socket}
   end
 
   defp current_job(socket) do
