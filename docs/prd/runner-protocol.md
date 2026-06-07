@@ -260,6 +260,7 @@ topic scheme survives a framing change.
 |---|---|---|
 | Max concurrent runners | 5 | derived each tick from `count(state IN (assigned, running))`; the Scheduler dispatches `cap − count` from the queue head |
 | Boot timeout | conservative (e.g. 60 s) | Provisioner boot call → first join |
+| Sweep interval | ~30 s (see `docs/supervision-tree.md`) | period of the Scheduler's deadline sweep; feeds the derived Boot Token TTL (= boot timeout + one sweep interval — not itself a knob, see Identity) |
 | Max boot attempts | 3 | per Provisioner boot call for the Job; exhaustion ⇒ failed (`boot_failure`) |
 | Grace period | conservative (e.g. 30 s) | channel-process termination |
 | Job timeout (default) | per MVP PRD | `job:started` |
