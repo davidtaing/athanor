@@ -64,6 +64,32 @@ defmodule Athanor.Pipelines.DagAdvanceTest do
     assert state(pipeline, "c") == :queued
   end
 
+  test "a duplicate re-advance walks through already-skipped intermediates" do
+    # Recovery path: a partial earlier pass skipped b but never reached c
+    # (e.g. the skip(c) write failed). The duplicate re-advance must traverse
+    # the already-skipped b so c still gets skipped.
+    pipeline = pipeline_with([{"a", []}, {"b", ["a"]}, {"c", ["b"]}])
+
+    # Simulate the partial pass: a failed, b skipped, c untouched.
+    job(pipeline, "a")
+    |> Ash.Changeset.for_update(:assign)
+    |> Ash.update!()
+    |> Ash.Changeset.for_update(:fail, %{failure_reason: :nonzero_exit})
+    |> Ash.update!()
+
+    job(pipeline, "b")
+    |> Ash.Changeset.for_update(:skip)
+    |> Ash.update!()
+
+    assert state(pipeline, "c") == :waiting
+
+    # The duplicate terminal fact re-drives advancement.
+    Pipelines.advance(job(pipeline, "a"))
+
+    assert state(pipeline, "b") == :skipped
+    assert state(pipeline, "c") == :skipped
+  end
+
   test "an upstream failure skips all transitive downstream Jobs; unrelated branches still run" do
     # a -> b -> c is one chain; x -> y is an unrelated branch.
     pipeline =

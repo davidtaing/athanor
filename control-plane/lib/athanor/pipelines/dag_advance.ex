@@ -82,28 +82,43 @@ defmodule Athanor.Pipelines.DagAdvance do
   # the cascade reaches the whole downstream subtree.
   defp skip_dependents(job, siblings) do
     by_name = Map.new(siblings, &{&1.name, &1})
-    do_skip([job.name], by_name)
+    do_skip([job.name], by_name, MapSet.new([job.name]))
     :ok
   end
 
-  defp do_skip([], _by_name), do: :ok
+  defp do_skip([], _by_name, _seen), do: :ok
 
-  defp do_skip([failed_name | rest], by_name) do
-    {newly_skipped, by_name} =
+  defp do_skip([failed_name | rest], by_name, seen) do
+    {frontier, by_name} =
       Enum.reduce(by_name, {[], by_name}, &maybe_skip(&1, &2, failed_name))
 
-    do_skip(rest ++ newly_skipped, by_name)
+    # Each node is processed at most once per advance call; `seen` keeps the
+    # walk linear when a node re-enters the frontier via several parents.
+    fresh = Enum.reject(frontier, &MapSet.member?(seen, &1))
+    do_skip(rest ++ fresh, by_name, MapSet.union(seen, MapSet.new(fresh)))
   end
 
   # Skip one dependent of `failed_name` if it's still skippable. A skip that
   # fails leaves the candidate where it is and out of the frontier; one bad
-  # dependent must not abort the cascade.
+  # dependent must not abort the cascade. An already-skipped dependent still
+  # joins the frontier: a duplicate re-advance (the recovery path for a partial
+  # earlier pass) must walk through it to reach deeper descendants.
   defp maybe_skip({name, candidate}, {skipped, acc}, failed_name) do
-    skippable? = failed_name in candidate.needs and candidate.state in [:waiting, :queued]
+    cond do
+      failed_name not in candidate.needs ->
+        {skipped, acc}
 
-    case skippable? && skip(candidate) do
-      [updated] -> {[name | skipped], Map.put(acc, name, updated)}
-      _ -> {skipped, acc}
+      candidate.state == :skipped ->
+        {[name | skipped], acc}
+
+      candidate.state in [:waiting, :queued] ->
+        case skip(candidate) do
+          [updated] -> {[name | skipped], Map.put(acc, name, updated)}
+          [] -> {skipped, acc}
+        end
+
+      true ->
+        {skipped, acc}
     end
   end
 
