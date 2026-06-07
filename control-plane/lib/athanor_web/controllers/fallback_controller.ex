@@ -43,6 +43,15 @@ defmodule AthanorWeb.FallbackController do
         true -> nil
       end
 
-    %{field: field, message: Exception.message(error)}
+    %{field: field, message: message(error)}
   end
+
+  # Prefer the error's own message (the text our validations/changes set) over
+  # `Exception.message/1`, which wraps it in splode bread crumbs and internal
+  # context that must not leak to API clients.
+  defp message(%{message: message}) when is_binary(message) and message != "" do
+    message
+  end
+
+  defp message(error), do: error |> Map.put(:bread_crumbs, []) |> Exception.message()
 end
