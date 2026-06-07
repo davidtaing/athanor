@@ -44,9 +44,11 @@ Default to Elixir; Go is for the runner only.
 - `docs/adr/` — architecture decision records.
 - `docs/WORKTREES.md` — git worktree setup for parallel Claude Code
   sessions (incl. future per-worktree Phoenix port/database plan).
-- Still to write: system overview, supervision tree, and the full
-  Elixir↔Go runner protocol spec (registration, job dispatch, log
-  streaming, heartbeats).
+- `docs/supervision-tree.md` — control-plane process architecture
+  (singleton Scheduler, Task.Supervisor Provisioner, deadlines as
+  columns, no per-Job processes).
+- Still to write: system overview and the full Elixir↔Go runner
+  protocol spec (registration, job dispatch, log streaming).
 
 ## Decided (see docs/adr/)
 
