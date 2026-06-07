@@ -86,26 +86,51 @@ defmodule Athanor.LogStore.Minio do
   # List the chunk objects under a Job's logs prefix as {seq, key}, ascending by
   # seq. The seq is parsed back out of the (zero-padded) object name — the name
   # is the sole source of truth for ordering (no per-Job seq state held).
+  #
+  # S3/minio cap a single ListObjects response at 1000 keys, so a Job with more
+  # than 1000 chunks must be paged: we use ListObjectsV2 (`list-type=2`) and loop
+  # on `NextContinuationToken` until the response is no longer truncated. Without
+  # this, a >1000-chunk Job would seal silently truncated, and (worse) the
+  # surviving `1..1000` would still pass the contiguity check, so verify_contiguous!
+  # could never catch it.
   defp sorted_chunk_keys(job_id) do
     prefix = "jobs/#{job_id}/logs/"
 
-    resp =
-      Req.get!(req(),
-        url: "s3:///#{bucket()}",
-        params: [prefix: prefix]
-      )
-
-    # req_s3 auto-decodes list XML only for virtual-host-style URLs (path "/");
-    # with path-style minio the path is "/{bucket}", so decode the XML here.
-    resp.body
-    |> decode_list_body()
-    |> get_in(["ListBucketResult", "Contents"])
-    |> List.wrap()
+    prefix
+    |> list_all_contents()
     |> Enum.map(fn %{"Key" => key} ->
       seq = key |> String.trim_leading(prefix) |> String.to_integer()
       {seq, key}
     end)
     |> Enum.sort_by(fn {seq, _} -> seq end)
+  end
+
+  # Accumulate every Contents entry under `prefix`, following the V2 continuation
+  # token across pages. `token` is nil on the first request.
+  defp list_all_contents(prefix, token \\ nil, acc \\ []) do
+    params = [{:"list-type", 2}, {:prefix, prefix}]
+    params = if token, do: [{:"continuation-token", token} | params], else: params
+
+    result =
+      Req.get!(req(),
+        url: "s3:///#{bucket()}",
+        params: params
+      ).body
+      # req_s3 auto-decodes list XML only for virtual-host-style URLs (path "/");
+      # with path-style minio the path is "/{bucket}", so decode the XML here.
+      |> decode_list_body()
+      |> Map.get("ListBucketResult", %{})
+
+    acc = acc ++ List.wrap(result["Contents"])
+
+    # IsTruncated/NextContinuationToken come back as strings from the XML parser.
+    case result do
+      %{"IsTruncated" => "true", "NextContinuationToken" => next} ->
+        list_all_contents(prefix, next, acc)
+
+      _ ->
+        acc
+    end
   end
 
   defp decode_list_body(body) when is_binary(body), do: ReqS3.XML.parse_s3(body)

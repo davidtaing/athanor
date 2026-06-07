@@ -62,4 +62,32 @@ defmodule Athanor.LogStore.MinioTest do
 
     assert_raise Athanor.LogStore.IntegrityError, fn -> Minio.seal(job) end
   end
+
+  test "seals all chunks for a Job with more than 1000 (ListObjectsV2 pagination)" do
+    # S3/minio cap a ListObjects page at 1000 keys, so a >1000-chunk Job exercises
+    # the NextContinuationToken loop. Without paging this Job would seal silently
+    # truncated AND still pass the contiguity check (a truncated 1..1000 is itself
+    # contiguous), so this is the only test that can catch a regression there.
+    job = job_id()
+    count = 1005
+
+    # Each chunk content carries its own seq so the concatenation order is checkable
+    # without holding the whole (large) body.
+    for seq <- 1..count do
+      :ok = Minio.put_chunk(job, seq, "#{seq}\n")
+    end
+
+    assert length(Minio.list_chunks(job)) == count
+
+    :ok = Minio.seal(job)
+    assert {:ok, sealed} = Minio.fetch(job)
+
+    lines = String.split(sealed, "\n", trim: true)
+    assert length(lines) == count
+    # Concatenation is in ascending seq order: first and last lines pin the ends.
+    assert List.first(lines) == "1"
+    assert List.last(lines) == "#{count}"
+
+    assert Minio.list_chunks(job) == []
+  end
 end

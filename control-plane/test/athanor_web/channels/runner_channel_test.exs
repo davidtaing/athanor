@@ -320,6 +320,29 @@ defmodule AthanorWeb.RunnerChannelTest do
       # The Channel withholds its ack while the store is down — no :ok reply.
       refute_reply ref, :ok, 100
     end
+
+    test "a malformed log:chunk is rejected gracefully and does not crash the Channel", %{
+      socket: socket,
+      job: job
+    } do
+      # Missing seq and a non-integer seq both miss the strict handle_in clause and
+      # land on the fallback (runner_channel.ex), which replies invalid_payload
+      # without touching the LogStore.
+      push(socket, "log:chunk", %{"step_index" => 0, "content" => "no seq"})
+      |> assert_reply(:error, %{reason: "invalid_payload"})
+
+      push(socket, "log:chunk", %{"seq" => "1", "step_index" => 0, "content" => "string seq"})
+      |> assert_reply(:error, %{reason: "invalid_payload"})
+
+      # Nothing was persisted, and the Channel is still alive — a well-formed chunk
+      # on the same socket still acks.
+      assert Athanor.LogStore.InMemory.list_chunks(job.id) == []
+
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "ok"})
+      |> assert_reply(:ok)
+
+      assert Athanor.LogStore.InMemory.list_chunks(job.id) == [{1, "ok"}]
+    end
   end
 
   describe "seal on terminal state" do

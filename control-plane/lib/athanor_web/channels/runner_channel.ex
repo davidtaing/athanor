@@ -273,6 +273,15 @@ defmodule AthanorWeb.RunnerChannel do
         # transition — a duplicate job:finished must not re-seal and clobber the
         # sealed object with an empty one. job:finished is sent only after every
         # chunk is acked (PRD), so by here the chunks are all durably present.
+        #
+        # maybe_seal runs BEFORE advance/destroy on purpose: a contiguity
+        # violation makes it raise IntegrityError, and that crash is the intended
+        # "loud" failure (design addenda). A gap/regression in the sealed seq
+        # means our own runner streamed a buggy log, so we refuse to quietly
+        # advance dependents or reap the container off bad data. The crash leaves
+        # the Job terminal but dependents unadvanced and the container alive; the
+        # duplicate-report retry path (ack_duplicate) is what re-advances the DAG
+        # and re-destroys the runner once the underlying cause is gone.
         maybe_seal(transitioned)
         # A terminal transition makes the Job's Dependency edges mean something
         # (issue #9): success enqueues newly-runnable dependents, failure skips
