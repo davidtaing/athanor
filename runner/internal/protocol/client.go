@@ -266,10 +266,11 @@ func (c *Client) dispatch(raw []byte) {
 	select {
 	case c.pushes <- Push{Event: event, Payload: payload}:
 	default:
-		// Buffer (cap 16) is full: the consumer is not draining fast enough.
-		// We drop the push rather than block the readLoop. Logging the drop
-		// makes it visible; backpressure/blocking is deferred to issue #8,
-		// once push volume (log:chunk) is real.
+		// Buffer (cap 16) is full: the consumer is not draining fast enough. We
+		// drop the push rather than block the readLoop. This path carries only
+		// CP→Runner server pushes (job:assign, job:cancel) — low volume; log:chunk
+		// is a client push with a reply and never flows here, so the high-volume
+		// log path has its own bounded-buffer backpressure (internal/logstream).
 		log.Printf("protocol: dropped server push, buffer full (event=%s topic=%s)", event, c.Topic())
 	}
 }

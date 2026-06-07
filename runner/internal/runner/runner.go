@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/davidtaing/athanor/runner/internal/executor"
+	"github.com/davidtaing/athanor/runner/internal/logstream"
 	"github.com/davidtaing/athanor/runner/internal/protocol"
 	"github.com/davidtaing/athanor/runner/internal/workspace"
 )
@@ -73,6 +75,15 @@ type assignPayload struct {
 	GitRef string            `json:"git_ref"`
 	Steps  []step            `json:"steps"`
 	Env    map[string]string `json:"env"`
+	Log    logConfig         `json:"log"`
+}
+
+// logConfig is the log batching config delivered in job:assign — tuning is
+// control-plane config, never a runner image rebuild (PRD log-streaming).
+// max_interval is milliseconds on the wire.
+type logConfig struct {
+	MaxBytes      int `json:"max_bytes"`
+	MaxIntervalMs int `json:"max_interval"`
 }
 
 // step is a Step object {command (required), name (optional)} (PRD #35). The
@@ -168,9 +179,23 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 		return 1, fmt.Errorf("job:started: %w", err)
 	}
 
-	result, err := r.runJob(ctx, assign)
+	// Stream Step (and clone) output as batched, sequenced log:chunk over the
+	// Channel (PRD log-streaming). The batching limits come from job:assign,
+	// never the image. Close drains every chunk's ack before we report
+	// job:finished — that ordering is what makes "nothing is lost when the
+	// Runner is destroyed" true.
+	streamer := logstream.New(chunkSender{ch: r.ch}, logstream.Config{
+		MaxBytes:    assign.Log.MaxBytes,
+		MaxInterval: time.Duration(assign.Log.MaxIntervalMs) * time.Millisecond,
+	})
+
+	result, err := r.runJob(ctx, assign, streamer)
 	if err != nil {
 		return 1, err
+	}
+
+	if err := streamer.Close(ctx); err != nil {
+		return 1, fmt.Errorf("log stream: %w", err)
 	}
 
 	finished := finishedPayload{
@@ -182,6 +207,54 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 	}
 
 	return result.ExitCode, nil
+}
+
+// outputSetter is implemented by a StepRunner whose Step output can be directed
+// to a writer per Step (the production *executor.ShellRunner). A StepRunner that
+// does not implement it (e.g. the test StubRunner) simply produces no streamed
+// output — the protocol path is exercised regardless.
+type outputSetter interface {
+	SetOutput(io.Writer)
+}
+
+// runSteps runs steps in order through the given StepRunner (rooted at the
+// checkout), directing each Step's output to its own streamer writer (so chunks
+// carry the right step_index), and stopping at the first nonzero exit — the
+// same semantics as executor.RunSteps.
+func (r *Runner) runSteps(ctx context.Context, stepRunner executor.StepRunner, steps []executor.Step, streamer *logstream.Streamer) executor.Result {
+	setter, canStream := stepRunner.(outputSetter)
+
+	for i, st := range steps {
+		if canStream {
+			setter.SetOutput(streamer.StepWriter(i))
+		}
+
+		exitCode, err := stepRunner.RunStep(ctx, st)
+		if err != nil {
+			idx := i
+			return executor.Result{ExitCode: 1, FailedStepIndex: &idx}
+		}
+		if exitCode != 0 {
+			idx := i
+			return executor.Result{ExitCode: exitCode, FailedStepIndex: &idx}
+		}
+	}
+	return executor.Result{ExitCode: 0}
+}
+
+// chunkSender adapts the protocol channel to logstream.Sender: each chunk is a
+// log:chunk client push whose ack (the Send reply) means the control plane has
+// durably handed it to the LogStore (PRD).
+type chunkSender struct {
+	ch channel
+}
+
+func (s chunkSender) SendChunk(ctx context.Context, c logstream.Chunk) error {
+	return s.ch.Send(ctx, "log:chunk", map[string]any{
+		"seq":        c.Seq,
+		"step_index": c.StepIndex,
+		"content":    string(c.Content),
+	})
 }
 
 // joinWithRetry performs the first join, retrying on a try_again rejection with
@@ -214,12 +287,13 @@ func (r *Runner) joinWithRetry(ctx context.Context) (protocol.JoinReply, error) 
 }
 
 // runJob clones the Job's repo into a fresh workspace directory, then runs the
-// Job's Steps from there. A clone failure fails the Job cleanly: the captured
-// git output is written to the log (stderr) like a failing Step's output, no
-// Step runs, and a nonzero Result is returned so job:finished reports a failed
-// Job (issue #7). The control plane derives the failed verdict and the
-// Provisioner destroys the container regardless.
-func (r *Runner) runJob(ctx context.Context, assign assignPayload) (executor.Result, error) {
+// Job's Steps from there, streaming all output (clone and Steps) as log:chunk.
+// A clone failure fails the Job cleanly: the captured git output is streamed to
+// the log like a failing Step's output, no Step runs, and a nonzero Result is
+// returned so job:finished reports a failed Job (issue #7). The control plane
+// derives the failed verdict and the Provisioner destroys the container
+// regardless.
+func (r *Runner) runJob(ctx context.Context, assign assignPayload, streamer *logstream.Streamer) (executor.Result, error) {
 	dir, err := os.MkdirTemp("", "athanor-workspace-*")
 	if err != nil {
 		return executor.Result{}, fmt.Errorf("create workspace: %w", err)
@@ -234,10 +308,10 @@ func (r *Runner) runJob(ctx context.Context, assign assignPayload) (executor.Res
 
 	cloneRes := r.clone(ctx, workspace.Spec{URL: assign.GitURL, Ref: assign.GitRef, Dir: checkout})
 	if cloneRes.Output != "" {
-		// Surface git's output in the Job log exactly like Step output. ADR 0004
-		// streaming is a later slice; for now this rides the runner's stderr,
-		// the same path Steps use.
-		fmt.Fprint(os.Stderr, cloneRes.Output)
+		// Surface git's output in the Job log exactly like Step output, streamed
+		// under step_index 0 — the clone is the Job's first observable work,
+		// ahead of any Step (PRD log-streaming).
+		fmt.Fprint(streamer.StepWriter(0), cloneRes.Output)
 	}
 	if cloneRes.Err != nil {
 		r.log.Error("clone failed", "git_url", redactURL(assign.GitURL), "git_ref", assign.GitRef, "err", cloneRes.Err)
@@ -251,7 +325,7 @@ func (r *Runner) runJob(ctx context.Context, assign assignPayload) (executor.Res
 	for i, s := range assign.Steps {
 		steps[i] = executor.Step{Name: s.displayName(), Run: s.Command}
 	}
-	return executor.RunSteps(ctx, r.runnerFor(checkout), steps), nil
+	return r.runSteps(ctx, r.runnerFor(checkout), steps, streamer), nil
 }
 
 func (r *Runner) awaitAssign(ctx context.Context) (assignPayload, error) {
