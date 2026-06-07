@@ -209,12 +209,19 @@ defmodule Athanor.SchedulerTest do
       # Were the raise to escape `dispatch_up_to/2`, the whole pass would abort
       # and "b" would never dispatch. The marker is "a"'s id (a unique UUID) so
       # this global config swap can't make a concurrent async test's boot raise.
+      prev_provisioner = Application.get_env(:athanor, :provisioner)
+      prev_job_id = Application.get_env(:athanor, :raising_provisioner_job_id)
       Application.put_env(:athanor, :provisioner, Athanor.Provisioner.Raising)
       Application.put_env(:athanor, :raising_provisioner_job_id, a.id)
 
       on_exit(fn ->
-        Application.delete_env(:athanor, :provisioner)
-        Application.delete_env(:athanor, :raising_provisioner_job_id)
+        restore = fn
+          key, nil -> Application.delete_env(:athanor, key)
+          key, value -> Application.put_env(:athanor, key, value)
+        end
+
+        restore.(:provisioner, prev_provisioner)
+        restore.(:raising_provisioner_job_id, prev_job_id)
       end)
 
       Scheduler.dispatch_queued(cap: 2)
