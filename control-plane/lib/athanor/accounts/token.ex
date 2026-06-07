@@ -1,4 +1,7 @@
 defmodule Athanor.Accounts.Token do
+  @moduledoc """
+  Persisted authentication tokens managed by AshAuthentication.
+  """
   use Ash.Resource,
     otp_app: :athanor,
     domain: Athanor.Accounts,

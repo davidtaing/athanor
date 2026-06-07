@@ -44,6 +44,7 @@ defmodule Athanor.MixProject do
       {:bcrypt_elixir, "~> 3.0"},
       {:picosat_elixir, "~> 0.2"},
       {:sourceror, "~> 1.8", only: [:dev, :test]},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:oban, "~> 2.0"},
       {:cinder, "~> 0.14"},
       {:usage_rules, "~> 1.0", only: [:dev]},

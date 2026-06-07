@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs for the same ref (PR or branch) so only the
+# latest commit's CI keeps running.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Detect which components changed so per-component jobs can gate with a
+  # job-level `if:`. We never use workflow-level `paths:` filters — a skipped
+  # job still reports a (neutral) status, which keeps required checks
+  # satisfiable on docs-only PRs.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      control-plane: ${{ steps.filter.outputs.control-plane }}
+      runner: ${{ steps.filter.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            control-plane:
+              - 'control-plane/**'
+              - '.tool-versions'
+              - '.github/workflows/ci.yml'
+            runner:
+              - 'runner/**'
+
+  # Elixir control-plane checks. The job name `elixir` is a required check on
+  # `main`; keep it stable. Runs only when control-plane (or its version pin /
+  # this workflow) changed, but always present so it can be required.
+  elixir:
+    name: elixir
+    needs: changes
+    if: needs.changes.outputs.control-plane == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: athanor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # Elixir/OTP versions come solely from the root .tool-versions — no
+      # version numbers are hardcoded in this workflow.
+      - name: Set up Elixir/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache deps and _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            control-plane/deps
+            control-plane/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('control-plane/mix.lock') }}-${{ hashFiles('.tool-versions') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ hashFiles('control-plane/mix.lock') }}-
+            ${{ runner.os }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Check for unused deps
+        run: mix deps.unlock --check-unused
+
+      - name: Credo
+        run: mix credo
+
+      - name: Test (warnings as errors)
+        run: mix test --warnings-as-errors
+
+  # Build-only Docker image for the control plane to catch Dockerfile rot.
+  # Runs only on pushes to main that touch control-plane. push: false — we
+  # never publish here. Releases (control-plane image, runner artifacts) are
+  # tag-gated (`v*`) and deferred until there's a first artifact consumer;
+  # no release workflow exists yet.
+  docker-build:
+    name: docker-build
+    needs: changes
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.control-plane == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build control-plane image
+        uses: docker/build-push-action@v6
+        with:
+          context: control-plane
+          push: false

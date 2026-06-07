@@ -1,4 +1,7 @@
 defmodule Athanor.Accounts.User do
+  @moduledoc """
+  An authenticated user of the control plane.
+  """
   use Ash.Resource,
     otp_app: :athanor,
     domain: Athanor.Accounts,

@@ -20,9 +20,8 @@ defmodule Athanor.Pipelines.Pipeline.Validations.ValidateDefinition do
 
     with :ok <- validate_non_empty(jobs),
          {:ok, names} <- validate_jobs_present(jobs),
-         :ok <- validate_dependencies(jobs, names),
-         :ok <- validate_acyclic(jobs) do
-      :ok
+         :ok <- validate_dependencies(jobs, names) do
+      validate_acyclic(jobs)
     end
   end
 
