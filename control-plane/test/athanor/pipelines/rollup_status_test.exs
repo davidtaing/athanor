@@ -41,7 +41,7 @@ defmodule Athanor.Pipelines.RollupStatusTest do
     pipeline = pipeline_with([{"a", []}, {"b", []}])
 
     Ash.update!(job(pipeline, "a"), %{}, action: :assign)
-    |> Ash.update!(%{}, action: :fail)
+    |> Ash.update!(%{failure_reason: :nonzero_exit}, action: :fail)
 
     # b is still queued, but a failed dominates.
     assert status(pipeline) == :failed

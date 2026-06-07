@@ -15,6 +15,10 @@ defmodule AthanorWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
+  # Runners connect here and speak the v1 protocol over Phoenix Channels
+  # (ADR 0001). Authentication is per-Channel at join, not at the socket.
+  socket "/runner", AthanorWeb.RunnerSocket, websocket: true, longpoll: false
+
   # Serve at "/" the static files from "priv/static" directory.
   #
   # When code reloading is disabled (e.g., in production),

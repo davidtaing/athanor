@@ -22,5 +22,9 @@ defmodule Athanor.Pipelines do
     resource Athanor.Pipelines.Job do
       define :get_job, action: :read, get_by: [:id]
     end
+
+    resource Athanor.Pipelines.Runner do
+      define :get_runner, action: :read, get_by: [:id]
+    end
   end
 end

@@ -20,6 +20,16 @@ defmodule Athanor.Pipelines.Job do
   postgres do
     table "jobs"
     repo Athanor.Repo
+
+    # The Failure Reason is data on the single Failed state (`CONTEXT.md`); the
+    # DB only ever stores NULL or one of the four canonical tokens, regardless
+    # of which writer touches the row.
+    check_constraints do
+      check_constraint :failure_reason,
+        name: "jobs_failure_reason_check",
+        check:
+          "failure_reason IS NULL OR failure_reason IN ('nonzero_exit', 'timeout', 'runner_lost', 'boot_failure')"
+    end
   end
 
   state_machine do
@@ -72,6 +82,14 @@ defmodule Athanor.Pipelines.Job do
     end
 
     update :fail do
+      # Failed always carries a Failure Reason (`CONTEXT.md`): the reason is
+      # data on the single Failed state, never a distinct state. Canonical
+      # tokens: nonzero_exit, timeout, runner_lost, boot_failure.
+      argument :failure_reason, :atom,
+        allow_nil?: false,
+        constraints: [one_of: [:nonzero_exit, :timeout, :runner_lost, :boot_failure]]
+
+      change set_attribute(:failure_reason, arg(:failure_reason))
       change transition_state(:failed)
     end
 
@@ -107,11 +125,17 @@ defmodule Athanor.Pipelines.Job do
     # Names of Jobs in the same Pipeline this Job depends on (Dependencies).
     attribute :needs, {:array, :string}, allow_nil?: false, default: []
 
+    # The Failure Reason on a Failed Job (`CONTEXT.md`). nil unless failed.
+    attribute :failure_reason, :atom,
+      allow_nil?: true,
+      constraints: [one_of: [:nonzero_exit, :timeout, :runner_lost, :boot_failure]]
+
     timestamps()
   end
 
   relationships do
     belongs_to :pipeline, Athanor.Pipelines.Pipeline, allow_nil?: false
+    has_one :runner, Athanor.Pipelines.Runner
   end
 
   identities do
