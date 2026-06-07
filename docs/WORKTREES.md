@@ -91,7 +91,12 @@ Rules of thumb:
   work in the same slot rather than removing it (`git checkout -b next-thing
   origin/main`).
 - The placeholder branches the slots were created with (`wt1`, `wt2`, `wt3`)
-  are parking positions, not work branches.
+  are long-lived parking positions, not work branches. To park an idle slot
+  on latest main, reset its parking branch in place:
+  `git checkout -B wt<N> origin/main`. Never check out `main` itself in a
+  slot — one branch per worktree means that would block `main` for every
+  other checkout. Anything committed on a parking branch is discarded at the
+  next reset.
 - Rebase/merge from `main` inside the worktree like any normal checkout.
 - Drop a stale per-worktree database with
   `psql -h localhost -U postgres -c 'DROP DATABASE athanor_dev_wt1'` if a
