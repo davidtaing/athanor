@@ -92,3 +92,8 @@ no secrets, no artifacts, no caching, no retries, no runner labels, no warm
 pools, single host, static bearer token auth, no UI (LiveView is the first
 post-MVP item). Secrets management and Firecracker are named post-MVP
 exploration targets, not abandoned scope.
+
+The API speaks hand-rolled flat JSON (`AthanorWeb.*JSON` modules);
+AshJsonApi was considered and rejected — the JSON:API envelope is overhead
+for a curl-first API. Revisit only if the API surface grows well beyond
+the MVP's handful of routes.

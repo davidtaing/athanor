@@ -1,0 +1,2 @@
+# BEAM crash dumps land wherever the node was started from.
+erl_crash.dump
