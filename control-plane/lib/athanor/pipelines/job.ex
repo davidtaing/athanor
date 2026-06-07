@@ -78,17 +78,14 @@ defmodule Athanor.Pipelines.Job do
     # re-send job:assign); this action only records it. Idempotent: a duplicate
     # job:ack keeps the first stamp (ack-and-ignore, protocol invariant 2). No
     # state transition — acknowledgement is a fact on the Job, not a lifecycle
-    # state.
+    # state. COALESCE makes first-stamp-wins atomic DB-side, so concurrent
+    # duplicate acks (e.g. a rejoin re-send racing the original) cannot
+    # overwrite the first timestamp.
     update :acknowledge do
-      require_atomic? false
-
-      change fn changeset, _context ->
-        if is_nil(changeset.data.acknowledged_at) do
-          Ash.Changeset.force_change_attribute(changeset, :acknowledged_at, DateTime.utc_now())
-        else
-          changeset
-        end
-      end
+      change atomic_update(
+               :acknowledged_at,
+               expr(fragment("COALESCE(?, ?)", acknowledged_at, now()))
+             )
     end
 
     # Lifecycle transitions. No execution exists in this slice, so these are not
