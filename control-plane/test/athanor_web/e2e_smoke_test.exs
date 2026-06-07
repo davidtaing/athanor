@@ -31,6 +31,16 @@ defmodule AthanorWeb.E2ESmokeTest do
   @token Application.compile_env!(:athanor, :api_token)
   @runner_image "athanor-runner:latest"
 
+  # A tiny, stable public repo the runner clones (issue #7). We deliberately
+  # clone its long-stable, NON-default `test` branch rather than `master`: the
+  # `test` branch carries a `CONTRIBUTING.md` file that `master` does NOT have,
+  # while both branches share an identical `README`. Asserting on the
+  # branch-exclusive file proves the runner honoured `git_ref` — had it ignored
+  # the ref and cloned the default branch, `CONTRIBUTING.md` would be absent and
+  # the Step would fail.
+  @public_repo "https://github.com/octocat/Hello-World.git"
+  @public_repo_ref "test"
+
   setup_all do
     # The default test endpoint runs with server: false. The E2E needs real
     # sockets so a container can dial back in, so start a server-enabled clone of
@@ -97,18 +107,63 @@ defmodule AthanorWeb.E2ESmokeTest do
     {:ok, conn: conn}
   end
 
-  test "an API-created Pipeline runs on a real container and reaches succeeded", %{conn: conn} do
-    job_id = create_pipeline_job(conn, %{"name" => "build", "steps" => ["echo hello", "true"]})
+  test "an API-created Pipeline runs its Steps against the checked-out repo at the right ref",
+       %{conn: conn} do
+    # The repo is cloned before Steps run at the NON-default `test` ref. This
+    # Step asserts on `CONTRIBUTING.md`, a file that exists ONLY on the `test`
+    # branch and not on the default `master` branch, and exits nonzero if it is
+    # absent. Success therefore proves the runner honoured `git_ref` rather than
+    # silently cloning the default branch (issue #7 acceptance criterion).
+    job_id =
+      create_pipeline_job(conn, %{
+        "name" => "build",
+        "steps" => [
+          # CONTRIBUTING.md exists only on the non-default `test` branch, so its
+          # presence alone proves git_ref was honoured; asserting on its text
+          # would couple the test to mutable third-party content.
+          %{"command" => "test -f CONTRIBUTING.md"},
+          %{"command" => "echo built"}
+        ]
+      })
 
     assert eventually_state(job_id) == :succeeded
     assert no_managed_containers?(), "runner container was not destroyed after success"
+  end
+
+  test "a Pipeline pointing at an unknown ref fails the Job and the container is destroyed", %{
+    conn: conn
+  } do
+    body =
+      post_pipeline(
+        conn,
+        [
+          %{
+            "name" => "build",
+            "image" => @runner_image,
+            "steps" => [%{"command" => "echo never"}]
+          }
+        ],
+        git_ref: "no-such-ref-xyz"
+      )
+
+    [%{"id" => job_id}] = body["data"]["jobs"]
+
+    # A bad ref fails the clone before any Step runs; the Job fails cleanly with
+    # reason nonzero_exit (the runner reports the clone failure as a nonzero
+    # exit), and the container is still destroyed.
+    assert eventually_state(job_id) == :failed
+    assert Ash.get!(Job, job_id).failure_reason == :nonzero_exit
+    assert no_managed_containers?(), "runner container was not destroyed after a failed clone"
   end
 
   test "a Pipeline whose Step exits nonzero reaches failed with reason nonzero_exit", %{
     conn: conn
   } do
     job_id =
-      create_pipeline_job(conn, %{"name" => "build", "steps" => ["echo before", "exit 7"]})
+      create_pipeline_job(conn, %{
+        "name" => "build",
+        "steps" => [%{"command" => "echo before"}, %{"command" => "exit 7"}]
+      })
 
     assert eventually_state(job_id) == :failed
     assert Ash.get!(Job, job_id).failure_reason == :nonzero_exit
@@ -118,8 +173,8 @@ defmodule AthanorWeb.E2ESmokeTest do
   test "independent Jobs run on separate concurrent containers", %{conn: conn} do
     body =
       post_pipeline(conn, [
-        %{"name" => "a", "image" => @runner_image, "steps" => ["true"]},
-        %{"name" => "b", "image" => @runner_image, "steps" => ["true"]}
+        %{"name" => "a", "image" => @runner_image, "steps" => [%{"command" => "true"}]},
+        %{"name" => "b", "image" => @runner_image, "steps" => [%{"command" => "true"}]}
       ])
 
     job_ids = for j <- body["data"]["jobs"], do: j["id"]
@@ -140,10 +195,10 @@ defmodule AthanorWeb.E2ESmokeTest do
     id
   end
 
-  defp post_pipeline(conn, jobs) do
+  defp post_pipeline(conn, jobs, opts \\ []) do
     definition = %{
-      "git_url" => "https://github.com/example/repo.git",
-      "git_ref" => "main",
+      "git_url" => Keyword.get(opts, :git_url, @public_repo),
+      "git_ref" => Keyword.get(opts, :git_ref, @public_repo_ref),
       "jobs" => jobs
     }
 
@@ -169,14 +224,36 @@ defmodule AthanorWeb.E2ESmokeTest do
     end
   end
 
-  defp no_managed_containers?, do: managed_container_ids() == []
+  # The Provisioner destroys the container asynchronously after the Job reaches a
+  # terminal state, so poll rather than asserting on the first read — otherwise
+  # the check races teardown (a fast-failing Job, e.g. a failed clone, exposes
+  # this most).
+  defp no_managed_containers?(attempts \\ 40) do
+    cond do
+      managed_container_ids() == [] -> true
+      attempts == 0 -> false
+      true -> :timer.sleep(250) && no_managed_containers?(attempts - 1)
+    end
+  end
 
-  defp managed_container_ids do
+  # Query the managed containers, distinguishing a successful "none left" from a
+  # Docker API error. A transient socket failure must NOT read as an empty list
+  # (a false-green teardown), so retry briefly and `flunk` if the error
+  # persists rather than conflating it with successful cleanup.
+  defp managed_container_ids(attempts \\ 5) do
     filters = Jason.encode!(%{"label" => ["athanor.managed=true"]})
 
     case Req.get(docker_req(url: "/containers/json", params: [all: true, filters: filters])) do
-      {:ok, %{status: 200, body: containers}} -> for %{"Id" => id} <- containers, do: id
-      _ -> []
+      {:ok, %{status: 200, body: containers}} ->
+        for %{"Id" => id} <- containers, do: id
+
+      error when attempts > 1 ->
+        Logger.warning("e2e querying managed containers failed, retrying: #{inspect(error)}")
+        :timer.sleep(200)
+        managed_container_ids(attempts - 1)
+
+      error ->
+        flunk("e2e could not list managed containers from Docker: #{inspect(error)}")
     end
   end
 

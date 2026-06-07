@@ -11,10 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/davidtaing/athanor/runner/internal/executor"
 	"github.com/davidtaing/athanor/runner/internal/protocol"
+	"github.com/davidtaing/athanor/runner/internal/workspace"
 )
 
 // Config is the runner's startup configuration, read from the environment by
@@ -50,6 +54,14 @@ type Runner struct {
 	// joinBackoff is the fixed delay between join retries on try_again. Set in
 	// tests; defaults to defaultJoinBackoff.
 	joinBackoff time.Duration
+
+	// clone checks out the Job's repo before any Step runs. Defaults to
+	// workspace.Clone (real git); tests inject a stub to avoid the network.
+	clone func(ctx context.Context, spec workspace.Spec) workspace.Result
+	// runnerFor produces the StepRunner that runs the Job's Steps from the
+	// cloned workspace directory. Defaults to a ShellRunner rooted at dir;
+	// tests inject a stub StepRunner while capturing dir.
+	runnerFor func(dir string) executor.StepRunner
 }
 
 // assignPayload is the job:assign payload (docs/prd/runner-protocol.md). steps
@@ -88,6 +100,11 @@ type finishedPayload struct {
 }
 
 // New returns a Runner that dials the configured URL.
+//
+// exec is the StepRunner used to run the Job's Steps. When it is a
+// *executor.ShellRunner (the production case), New roots it at the cloned
+// workspace directory so Steps run from the checkout; other StepRunners (test
+// stubs) are used as-is.
 func New(cfg Config, exec executor.StepRunner) *Runner {
 	return &Runner{
 		cfg:         cfg,
@@ -95,6 +112,13 @@ func New(cfg Config, exec executor.StepRunner) *Runner {
 		ch:          protocol.NewClient(cfg.URL, cfg.RunnerID),
 		log:         slog.Default(),
 		joinBackoff: defaultJoinBackoff,
+		clone:       workspace.Clone,
+		runnerFor: func(dir string) executor.StepRunner {
+			if sh, ok := exec.(*executor.ShellRunner); ok {
+				sh.Dir = dir
+			}
+			return exec
+		},
 	}
 }
 
@@ -144,11 +168,10 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 		return 1, fmt.Errorf("job:started: %w", err)
 	}
 
-	steps := make([]executor.Step, len(assign.Steps))
-	for i, s := range assign.Steps {
-		steps[i] = executor.Step{Name: s.displayName(), Run: s.Command}
+	result, err := r.runJob(ctx, assign)
+	if err != nil {
+		return 1, err
 	}
-	result := executor.RunSteps(ctx, r.exec, steps)
 
 	finished := finishedPayload{
 		ExitCode:        result.ExitCode,
@@ -190,6 +213,47 @@ func (r *Runner) joinWithRetry(ctx context.Context) (protocol.JoinReply, error) 
 	}
 }
 
+// runJob clones the Job's repo into a fresh workspace directory, then runs the
+// Job's Steps from there. A clone failure fails the Job cleanly: the captured
+// git output is written to the log (stderr) like a failing Step's output, no
+// Step runs, and a nonzero Result is returned so job:finished reports a failed
+// Job (issue #7). The control plane derives the failed verdict and the
+// Provisioner destroys the container regardless.
+func (r *Runner) runJob(ctx context.Context, assign assignPayload) (executor.Result, error) {
+	dir, err := os.MkdirTemp("", "athanor-workspace-*")
+	if err != nil {
+		return executor.Result{}, fmt.Errorf("create workspace: %w", err)
+	}
+	// The runner is ephemeral (ADR 0003) so the container's filesystem dies with
+	// the Job, but clean up the workspace anyway so it never leaks if a future
+	// slice reuses the process.
+	defer func() { _ = os.RemoveAll(dir) }()
+	// The clone target must not pre-exist for `git clone`, so clone into a
+	// child of the workspace directory.
+	checkout := filepath.Join(dir, "repo")
+
+	cloneRes := r.clone(ctx, workspace.Spec{URL: assign.GitURL, Ref: assign.GitRef, Dir: checkout})
+	if cloneRes.Output != "" {
+		// Surface git's output in the Job log exactly like Step output. ADR 0004
+		// streaming is a later slice; for now this rides the runner's stderr,
+		// the same path Steps use.
+		fmt.Fprint(os.Stderr, cloneRes.Output)
+	}
+	if cloneRes.Err != nil {
+		r.log.Error("clone failed", "git_url", redactURL(assign.GitURL), "git_ref", assign.GitRef, "err", cloneRes.Err)
+		// A failed clone fails the Job: a nonzero exit with no Step run. The Job
+		// failed before its Steps, so there is no failing Step index.
+		return executor.Result{ExitCode: 1}, nil
+	}
+
+	// Steps run from the checkout (PRD #35 Step objects: command + optional name).
+	steps := make([]executor.Step, len(assign.Steps))
+	for i, s := range assign.Steps {
+		steps[i] = executor.Step{Name: s.displayName(), Run: s.Command}
+	}
+	return executor.RunSteps(ctx, r.runnerFor(checkout), steps), nil
+}
+
 func (r *Runner) awaitAssign(ctx context.Context) (assignPayload, error) {
 	for {
 		select {
@@ -212,4 +276,16 @@ func (r *Runner) awaitAssign(ctx context.Context) (assignPayload, error) {
 			return assignPayload{}, ctx.Err()
 		}
 	}
+}
+
+// redactURL strips any userinfo from a URL before it is logged, so embedded
+// credentials (password, or a token riding in the username slot) never reach
+// job logs. Returns the input unchanged if it does not parse as a URL.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }

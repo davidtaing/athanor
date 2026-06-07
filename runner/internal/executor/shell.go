@@ -17,6 +17,10 @@ import (
 type ShellRunner struct {
 	// Shell is the shell binary used to interpret a Step's Run command.
 	Shell string
+	// Dir is the working directory Steps run from — the cloned workspace
+	// (issue #7). Empty means the process's current directory (the runner's
+	// default), used by tests that don't need a checkout.
+	Dir string
 }
 
 // NewShellRunner returns a ShellRunner using /bin/sh.
@@ -27,6 +31,7 @@ func NewShellRunner() *ShellRunner {
 // RunStep implements StepRunner.
 func (r *ShellRunner) RunStep(ctx context.Context, step Step) (int, error) {
 	cmd := exec.CommandContext(ctx, r.Shell, "-c", step.Run)
+	cmd.Dir = r.Dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
