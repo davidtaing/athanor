@@ -53,6 +53,14 @@ defmodule Athanor.Pipelines.Runner do
       end
     end
 
+    # Stamp the booted container's id once the Provisioner has started it, so the
+    # Provisioner can force-destroy exactly that container when the Job ends. The
+    # Runner record is created before boot (ADR 0003); this fills in the handle
+    # the boot produced.
+    update :record_container do
+      accept [:container_id]
+    end
+
     # First join: burn the Boot Token and issue a Session Token. Fails if the
     # token is already burned or expired (a duplicate/late join).
     update :join do
@@ -91,6 +99,11 @@ defmodule Athanor.Pipelines.Runner do
 
     # The Session Token, issued at first join. Authenticates rejoin (#10).
     attribute :session_token, :string, allow_nil?: true, sensitive?: true
+
+    # The id of the booted container (Docker for now). Filled in by the
+    # Provisioner after it starts the container; lets it destroy exactly that
+    # container when the Job reaches a terminal state.
+    attribute :container_id, :string, allow_nil?: true
 
     # When the Runner first connected.
     attribute :joined_at, :utc_datetime_usec, allow_nil?: true

@@ -19,6 +19,7 @@ defmodule AthanorWeb.RunnerChannel do
   require Logger
 
   alias Athanor.Pipelines.Runner
+  alias Athanor.Provisioner
 
   @protocol_version "v1"
 
@@ -150,6 +151,10 @@ defmodule AthanorWeb.RunnerChannel do
         # transitive dependents. The DAG advance is driven from the same place
         # the fact lands, then the Scheduler is nudged from inside advance.
         maybe_advance(transitioned)
+        # The Runner is ephemeral (ADR 0003): once its Job is terminal — success,
+        # failure, anything — its container must be destroyed. Fire-and-forget so
+        # a slow/failing Docker call never blocks the ack the protocol owes.
+        maybe_destroy_runner(transitioned, socket)
         {:reply, :ok, socket}
 
       # A duplicate transition (already running / already terminal) is rejected
@@ -173,7 +178,15 @@ defmodule AthanorWeb.RunnerChannel do
   # so dependents would otherwise strand in :waiting. Advancement is idempotent
   # — it reads rows and drives transitions that no-op when already done.
   defp ack_duplicate(socket, action) do
-    if terminal_action?(action), do: maybe_advance(current_job(socket))
+    if terminal_action?(action) do
+      job = current_job(socket)
+      maybe_advance(job)
+      # If the original terminal report's destroy was lost (Task crash, control-
+      # plane restart), this duplicate is the remaining signal that the container
+      # must be reaped. Destroy is idempotent (already-gone ⇒ :ok).
+      maybe_destroy_runner(job, socket)
+    end
+
     {:reply, :ok, socket}
   end
 
@@ -201,6 +214,39 @@ defmodule AthanorWeb.RunnerChannel do
        do: Athanor.Pipelines.advance(job)
 
   defp maybe_advance(_job), do: :ok
+
+  # Destroy the Runner's container once its Job is terminal. Runs as a supervised,
+  # short-lived Task under the Provisioner's Task.Supervisor (docs/supervision-
+  # tree.md): boot/destroy are concurrent and a hung Docker call affects only its
+  # own Task, never the Channel that owes the protocol ack.
+  defp maybe_destroy_runner(%{state: state} = job, socket)
+       when state in [:succeeded, :failed, :skipped, :canceled] do
+    runner = runner_for(socket, job)
+
+    case Task.Supervisor.start_child(Athanor.Provisioner.TaskSupervisor, fn ->
+           Provisioner.destroy(runner)
+         end) do
+      {:ok, _pid} ->
+        :ok
+
+      # The destroy Task couldn't even be spawned (supervisor saturated/down).
+      # The channel ack must not fail on this — the #10 label-sweep is the
+      # eventual backstop for the leaked container; just log it loudly.
+      {:error, reason} ->
+        Logger.error(
+          "runner_channel could not start destroy task for runner #{runner.id}: " <>
+            inspect(reason)
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_destroy_runner(_job, _socket), do: :ok
+
+  defp runner_for(socket, _job) do
+    Ash.get!(Runner, socket.assigns.runner_id)
+  end
 
   defp terminal_action?(action), do: action in [:succeed, :fail, :skip, :cancel]
 end
