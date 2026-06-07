@@ -37,7 +37,7 @@ yourself.
 |---|---|---|
 | #2 | Walking skeleton: compose stack + health endpoint | — |
 | #3 | Create & fetch Pipelines | #2 |
-| #4 | Runner protocol v0 over Channels (fake runner) | #3 |
+| #4 | Runner protocol v1 over Channels (fake runner) | #3 |
 | #5 | Go runner walking skeleton | #4 |
 | #6 | Docker Provisioner — tracer bullet | #4, #5 |
 | #7 | Git clone in the runner | #6 |
@@ -45,6 +45,12 @@ yourself.
 | #9 | DAG scheduling | #4 |
 | #10 | Failure handling | #6 |
 | #11 | Cancellation | #6 |
+
+Protocol note: the runner protocol PRD (`docs/prd/runner-protocol.md`)
+exists and is **binding on the MVP**. #4 implements the v1 message catalog
+from that PRD, which supersedes the v0 stub catalog in the issue body; #8,
+#10, and #11 inherit its log-framing, liveness-timer, and cancellation
+semantics.
 
 Execution order: the spine **#2 → #3 → #4 → #5 → #6 is strictly
 sequential** — these create the conventions (Ash patterns, test seams,
@@ -96,15 +102,15 @@ For each issue, in DAG order:
 
 - An issue's requirements contradict an ADR or `CONTEXT.md`.
 - Two fix rounds on the same issue fail.
-- An agent wants to expand runner protocol v0 beyond the message catalog
-  in #4 — v0 is a deliberate stub; a dedicated protocol PRD supersedes it
-  later. Scope creep there is a stop condition, not a judgment call.
+- An agent wants to expand the runner protocol beyond the v1 message
+  catalog in `docs/prd/runner-protocol.md` (which supersedes the v0 stub
+  in #4). Scope creep there is a stop condition, not a judgment call.
 - Anything requires credentials, external services, or destructive
   operations not already available in the repo/compose stack.
 
 ## Done
 
 All ten issues closed, all PRs merged, e2e smoke from #6 still green on
-`main`. Final act: post a summary comment on PRD #1 — what shipped, known
-deviations, and a reminder that the protocol PRD (reconnection, log
-framing, heartbeats, versioning) is the next design session.
+`main`. Final act: post a summary comment on PRD #1 — what shipped and
+known deviations. (The protocol PRD formerly flagged here as the next
+design session now exists: `docs/prd/runner-protocol.md`.)

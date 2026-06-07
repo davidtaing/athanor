@@ -55,9 +55,10 @@ never a distinct state.
 _Avoid_: Passed, errored
 
 **Failure Reason**:
-Why a Job failed: nonzero exit, timeout, runner lost, or boot failure. All
-reasons share the single Failed state.
-_Avoid_: Error type, failure state
+Why a Job failed. Canonical tokens: `nonzero_exit`, `timeout`, `runner_lost`,
+`boot_failure`. All reasons share the single Failed state.
+_Avoid_: Error type, failure state, hyphenated or prose variants when naming
+the value
 
 **Skipped**:
 Terminal. The system's verdict when an upstream Dependency failed. Distinct
@@ -81,3 +82,15 @@ _Avoid_: Agent, worker, executor, daemon
 The component that boots a Runner when a Job needs one and destroys it when
 the Job ends.
 _Avoid_: Autoscaler, pool manager
+
+**Boot Token**:
+The one-time credential a Runner presents on its first connection, created
+with the Runner before boot. Burned at first use; rejected on reuse or after
+expiry. Proves "the Provisioner booted me", nothing more.
+_Avoid_: API key, registration token
+
+**Session Token**:
+The credential issued to a Runner at first join, used to authenticate
+reconnection. Valid only until the Runner's Job reaches a terminal state.
+Exists only in the Runner's memory, never in its boot configuration.
+_Avoid_: Boot token, auth token
