@@ -43,12 +43,14 @@ defmodule Athanor.LogStore.MinioTest do
     assert Minio.list_chunks(job) == []
   end
 
-  test "writing the same seq twice yields one object (chunk-name-as-seq)" do
+  test "rewriting the same seq overwrites the object, last write wins (chunk-name-as-seq)" do
     job = job_id()
-    :ok = Minio.put_chunk(job, 1, "value")
-    :ok = Minio.put_chunk(job, 1, "value")
+    :ok = Minio.put_chunk(job, 1, "first")
+    :ok = Minio.put_chunk(job, 1, "second")
 
-    assert Minio.list_chunks(job) == [{1, "value"}]
+    # One object (the name is the seq, so the second write overwrites the first),
+    # and its content is the second payload — last write wins.
+    assert Minio.list_chunks(job) == [{1, "second"}]
   end
 
   test "fetch of an unsealed Job is not_found" do

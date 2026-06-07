@@ -60,13 +60,46 @@ defmodule AthanorWeb.RunnerChannel do
 
   @impl true
   def handle_info({:after_join, runner}, socket) do
+    # Test seam: a chunk can race ahead of this async assign, and the only way to
+    # exercise that deterministically is to defer the assign without blocking the
+    # Channel's message loop (a blocked loop would deadlock the test harness's own
+    # socket call). When armed, this returns with job_id still unstamped and tells
+    # the test, which then drives a log:chunk (must reply try_again, never crash)
+    # before sending :do_assign to complete the real assign. No-op in prod (the
+    # key is unset). Precedent: the maybe_inject_* join seams below.
+    if defer_after_join?(runner) do
+      send_after_join_deferred(runner)
+      {:noreply, socket}
+    else
+      {:noreply, do_after_join(runner, socket)}
+    end
+  end
+
+  def handle_info({:do_assign, runner}, socket) do
+    # Test-only continuation of a deferred after_join (see the seam above).
+    {:noreply, do_after_join(runner, socket)}
+  end
+
+  defp do_after_join(runner, socket) do
     job = job_for_runner(runner)
     # Stamp the Job id on the socket so the log:chunk hot path never re-loads the
     # Runner just to namespace the chunk objects (the Job id is the chunk
     # object's prefix, ADR 0004).
     socket = assign(socket, :job_id, job.id)
     push(socket, "job:assign", assign_payload(job))
-    {:noreply, socket}
+    socket
+  end
+
+  defp defer_after_join?(runner) do
+    case Application.get_env(:athanor, :runner_channel_after_join_gate) do
+      {runner_id, _pid} -> runner_id == runner.id
+      _ -> false
+    end
+  end
+
+  defp send_after_join_deferred(runner) do
+    {_runner_id, test_pid} = Application.get_env(:athanor, :runner_channel_after_join_gate)
+    send(test_pid, {:after_join_deferred, self(), runner})
   end
 
   @impl true
@@ -124,8 +157,29 @@ defmodule AthanorWeb.RunnerChannel do
     # write. On a store failure we withhold the ack (no reply) so the Runner's
     # bounded-buffer → pipe-backpressure path stalls losslessly until the store
     # recovers — never drop, never fail. Contiguity is enforced once at seal.
-    job_id = socket.assigns.job_id
+    #
+    # The Job id is stamped asynchronously in the :after_join handle_info, so a
+    # chunk that races ahead of that assign would dereference a missing key and
+    # crash the Channel. Guard it: a not-yet-stamped Job id is transient (the
+    # assign lands momentarily), so reply try_again — the Runner retries that
+    # chunk — rather than crashing the connection.
+    case socket.assigns do
+      %{job_id: job_id} ->
+        handle_chunk_reply(job_id, seq, step_index, content, socket)
 
+      _ ->
+        Logger.warning("log:chunk before job:assign stamped job_id; asking runner to retry")
+        {:reply, {:error, %{reason: "try_again"}}, socket}
+    end
+  end
+
+  def handle_in("log:chunk", _params, socket) do
+    {:reply, {:error, %{reason: "invalid_payload"}}, socket}
+  end
+
+  # --- internals ---
+
+  defp handle_chunk_reply(job_id, seq, step_index, content, socket) do
     case Athanor.Logs.handle_chunk(job_id, seq, step_index, content) do
       :ok ->
         {:reply, :ok, socket}
@@ -135,12 +189,6 @@ defmodule AthanorWeb.RunnerChannel do
         {:noreply, socket}
     end
   end
-
-  def handle_in("log:chunk", _params, socket) do
-    {:reply, {:error, %{reason: "invalid_payload"}}, socket}
-  end
-
-  # --- internals ---
 
   # Returns {:ok, runner, session_token} or {:error, code, detail}, where code is
   # `:invalid_credentials` (fatal: burned/expired/unknown token, missing params,

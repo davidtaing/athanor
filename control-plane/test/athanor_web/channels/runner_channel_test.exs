@@ -345,6 +345,39 @@ defmodule AthanorWeb.RunnerChannelTest do
     end
   end
 
+  # No pre-join setup here: this describe joins itself so it can arm the
+  # after_join gate before the assign runs.
+  describe "log:chunk before job:assign" do
+    test "a chunk arriving before job_id is stamped is rejected gracefully, not a crash",
+         %{runner: runner} do
+      Athanor.LogStore.InMemory.reset()
+
+      # Arm the after_join gate so the assign is deferred (job_id left unstamped)
+      # without blocking the Channel loop. The Channel sends {:after_join_deferred,
+      # pid, runner}; we drive a chunk into that window, then send :do_assign to
+      # complete the real assign.
+      Application.put_env(:athanor, :runner_channel_after_join_gate, {runner.id, self()})
+      on_exit(fn -> Application.delete_env(:athanor, :runner_channel_after_join_gate) end)
+
+      {:ok, _reply, socket} = connect_and_join(runner, %{"boot_token" => runner.boot_token})
+
+      assert_receive {:after_join_deferred, channel_pid, channel_runner}, 1_000
+
+      # A chunk that races ahead of the assign must reply gracefully, not crash.
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "early"})
+      |> assert_reply(:error, %{reason: "try_again"})
+
+      # The Channel is still alive: complete the deferred assign, then a well-formed
+      # chunk acks.
+      assert Process.alive?(channel_pid)
+      send(channel_pid, {:do_assign, channel_runner})
+      assert_push "job:assign", _payload
+
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "ok"})
+      |> assert_reply(:ok)
+    end
+  end
+
   describe "seal on terminal state" do
     setup %{runner: runner} do
       Athanor.LogStore.InMemory.reset()

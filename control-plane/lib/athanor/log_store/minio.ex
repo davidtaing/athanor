@@ -71,13 +71,52 @@ defmodule Athanor.LogStore.Minio do
   @spec ensure_bucket() :: :ok
   def ensure_bucket do
     case Req.put(req(), url: "s3:///#{bucket()}") do
-      {:ok, %{status: status}} when status in 200..299 -> :ok
-      # minio returns 409 BucketAlreadyOwnedByYou on a re-create.
-      {:ok, %{status: 409}} -> :ok
-      {:ok, %{status: status, body: body}} -> raise "create bucket #{status}: #{inspect(body)}"
-      {:error, reason} -> raise "create bucket failed: #{inspect(reason)}"
+      {:ok, %{status: status}} when status in 200..299 ->
+        :ok
+
+      # A 409 is only idempotent-OK when *we* already own the bucket
+      # (BucketAlreadyOwnedByYou). BucketAlreadyExists means the name is taken by
+      # another account — treating that as success would silently point logs at a
+      # bucket we don't control, so it must fail loudly. minio (single-tenant) and
+      # AWS can return either code, so handle both.
+      {:ok, %{status: 409, body: body}} ->
+        case bucket_conflict_code(body) do
+          "BucketAlreadyOwnedByYou" ->
+            :ok
+
+          other ->
+            raise "create bucket 409: #{other || "unknown conflict"} — the logs bucket " <>
+                    "#{bucket()} exists but is not owned by this account (ADR 0004)"
+        end
+
+      {:ok, %{status: status, body: body}} ->
+        raise "create bucket #{status}: #{inspect(body)}"
+
+      {:error, reason} ->
+        raise "create bucket failed: #{inspect(reason)}"
     end
   end
+
+  # Pull the S3 error <Code> out of a 409 body. The body may already be a decoded
+  # map (req_s3 auto-decode) or raw XML; handle both and return nil if no code is
+  # found so the caller fails loud rather than silently treating it as owned.
+  defp bucket_conflict_code(body) when is_map(body) do
+    get_in(body, ["Error", "Code"]) || body["Code"]
+  end
+
+  defp bucket_conflict_code(body) when is_binary(body) do
+    body
+    |> decode_list_body()
+    |> bucket_conflict_code()
+  rescue
+    _ ->
+      case Regex.run(~r{<Code>([^<]+)</Code>}, body) do
+        [_, code] -> code
+        _ -> nil
+      end
+  end
+
+  defp bucket_conflict_code(_body), do: nil
 
   # --- internals ---
 
