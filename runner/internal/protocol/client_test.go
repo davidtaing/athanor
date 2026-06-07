@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,7 +132,7 @@ func TestJoinRejectedFailsFast(t *testing.T) {
 			"status": "error",
 			"response": map[string]any{
 				"protocol_version": "v1",
-				"reason":           "invalid_boot_token",
+				"reason":           "invalid_credentials",
 			},
 		}
 		respRaw, _ := json.Marshal(resp)
@@ -150,8 +151,50 @@ func TestJoinRejectedFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatal("JoinWithBootToken err = nil, want non-nil for a rejected join")
 	}
-	if !strings.Contains(err.Error(), "invalid_boot_token") {
-		t.Errorf("error = %v, want it to mention the reject reason", err)
+	// The rejection is surfaced as a typed error carrying the coarse code, so the
+	// caller can branch fatal vs retry (PRD #35).
+	var rej *JoinRejectedError
+	if !errors.As(err, &rej) {
+		t.Fatalf("error = %v (%T), want *JoinRejectedError", err, err)
+	}
+	if rej.Reason != ReasonInvalidCredentials {
+		t.Errorf("reason = %q, want %q", rej.Reason, ReasonInvalidCredentials)
+	}
+}
+
+func TestJoinRejectedTryAgainCarriesCode(t *testing.T) {
+	srv := newFakeServer(t, func(t *testing.T, ws *websocket.Conn) {
+		_, raw, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+		f := decodeFrame(t, raw)
+		resp := map[string]any{
+			"status": "error",
+			"response": map[string]any{
+				"protocol_version": "v1",
+				"reason":           "try_again",
+			},
+		}
+		respRaw, _ := json.Marshal(resp)
+		reply := v2Frame{JoinRef: f.JoinRef, Ref: f.Ref, Topic: f.Topic, Event: "phx_reply", Payload: respRaw}
+		_ = ws.WriteMessage(websocket.TextMessage, encodeFrame(t, reply))
+	})
+	defer srv.Close()
+
+	client := NewClient(wsURL(srv.URL), "runner-1")
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := client.JoinWithBootToken(ctx, "tok")
+	var rej *JoinRejectedError
+	if !errors.As(err, &rej) {
+		t.Fatalf("error = %v (%T), want *JoinRejectedError", err, err)
+	}
+	if rej.Reason != ReasonTryAgain {
+		t.Errorf("reason = %q, want %q", rej.Reason, ReasonTryAgain)
 	}
 }
 

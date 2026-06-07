@@ -29,6 +29,27 @@ type JoinReply struct {
 	Verdict         string `json:"verdict"`
 }
 
+// Rejection-code wire values (PRD #35). The control plane returns exactly these
+// two coarse codes on a rejected join.
+const (
+	// ReasonInvalidCredentials is a fatal rejection (burned/expired/unknown Boot
+	// Token, missing params, unknown topic): the Runner exits nonzero at once.
+	ReasonInvalidCredentials = "invalid_credentials"
+	// ReasonTryAgain is a transient rejection (an internal fault evaluating the
+	// join): the Runner retries with a fixed short backoff.
+	ReasonTryAgain = "try_again"
+)
+
+// JoinRejectedError is returned when the control plane rejects a join. Reason is
+// the coarse wire code (PRD #35); callers branch on it (fatal vs retry).
+type JoinRejectedError struct {
+	Reason string
+}
+
+func (e *JoinRejectedError) Error() string {
+	return "join rejected: " + e.Reason
+}
+
 // Push is a control-plane -> Runner message that is not a reply (e.g.
 // job:assign, job:cancel).
 type Push struct {
@@ -115,7 +136,13 @@ func (c *Client) join(ctx context.Context, params map[string]string) (JoinReply,
 		return JoinReply{}, err
 	}
 	if res.status != "ok" {
-		return JoinReply{}, fmt.Errorf("join rejected: %s", string(res.response))
+		// Surface the coarse rejection code so the caller can branch on it: a
+		// fatal invalid_credentials vs a retryable try_again (PRD #35).
+		var rej struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal(res.response, &rej)
+		return JoinReply{}, &JoinRejectedError{Reason: rej.Reason}
 	}
 
 	var reply JoinReply

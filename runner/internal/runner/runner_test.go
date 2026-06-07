@@ -13,11 +13,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// scriptedCP is a fake control plane that drives the full v0 protocol path:
-// reply to join, push job:assign, ack job:started and job:finished, recording
-// the order of inbound events and the finished payload.
+// scriptedCP is a fake control plane that drives the full v1 protocol path:
+// reply to join, push job:assign (with Step objects), ack job:ack, job:started
+// and job:finished, recording the order of inbound events and the finished
+// payload.
 type scriptedCP struct {
-	steps []string
+	// steps are Step objects {command, name?} as they cross the wire (PRD #35).
+	steps []map[string]any
 
 	gotEvents   []string
 	finishedRaw json.RawMessage
@@ -66,11 +68,13 @@ func (s *scriptedCP) handle(t *testing.T, ws *websocket.Conn) {
 		"log":     map[string]any{"max_bytes": 65536, "max_interval": 1000},
 	})
 
-	// 3. job:started, then job:finished — ack both.
+	// 3. job:ack, job:started, then job:finished — ack each.
 	for {
 		f := read()
 		s.gotEvents = append(s.gotEvents, f.Event)
 		switch f.Event {
+		case "job:ack":
+			reply(f, "ok", map[string]any{})
 		case "job:started":
 			reply(f, "ok", map[string]any{})
 		case "job:finished":
@@ -132,15 +136,119 @@ func TestRunFailsFastOnUnknownJoinVerdict(t *testing.T) {
 	}
 }
 
+// TestRunExitsNonzeroOnInvalidCredentials: an invalid_credentials rejection is
+// fatal — the runner exits nonzero immediately, without retrying (PRD #35).
+func TestRunExitsNonzeroOnInvalidCredentials(t *testing.T) {
+	var joinAttempts int
+	srv := newFakeServer(t, func(t *testing.T, ws *websocket.Conn) {
+		t.Helper()
+		for {
+			_, raw, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			f := decodeFrame(t, raw)
+			joinAttempts++
+			respRaw, _ := json.Marshal(map[string]any{
+				"status": "error",
+				"response": map[string]any{
+					"protocol_version": "v1",
+					"reason":           "invalid_credentials",
+				},
+			})
+			out := v2Frame{JoinRef: f.JoinRef, Ref: f.Ref, Topic: f.Topic, Event: "phx_reply", Payload: respRaw}
+			_ = ws.WriteMessage(websocket.TextMessage, encodeFrame(t, out))
+		}
+	})
+	defer srv.Close()
+
+	exec := executor.StubRunner(func(_ context.Context, _ executor.Step) (int, error) {
+		t.Fatal("no step should run on a fatal rejection")
+		return 0, nil
+	})
+
+	r := New(Config{URL: wsURL(srv.URL), RunnerID: "runner-1", BootToken: "bad"}, exec)
+	r.joinBackoff = time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	code, err := r.Run(ctx)
+	if err == nil {
+		t.Fatal("Run err = nil, want non-nil for a fatal rejection")
+	}
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if joinAttempts != 1 {
+		t.Fatalf("join attempts = %d, want 1 — invalid_credentials must not retry", joinAttempts)
+	}
+}
+
+// TestRunRetriesOnTryAgain: a try_again rejection is transient — the runner
+// retries the join with a fixed backoff until it is accepted (PRD #35).
+func TestRunRetriesOnTryAgain(t *testing.T) {
+	const rejectTimes = 2
+	cp := &scriptedCP{steps: []map[string]any{{"command": "make"}}}
+
+	var joinAttempts int
+	srv := newFakeServer(t, func(t *testing.T, ws *websocket.Conn) {
+		t.Helper()
+		// Reject the first `rejectTimes` joins with try_again, then run the full
+		// happy path on the next join.
+		for joinAttempts < rejectTimes {
+			_, raw, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			f := decodeFrame(t, raw)
+			joinAttempts++
+			respRaw, _ := json.Marshal(map[string]any{
+				"status": "error",
+				"response": map[string]any{
+					"protocol_version": "v1",
+					"reason":           "try_again",
+				},
+			})
+			out := v2Frame{JoinRef: f.JoinRef, Ref: f.Ref, Topic: f.Topic, Event: "phx_reply", Payload: respRaw}
+			_ = ws.WriteMessage(websocket.TextMessage, encodeFrame(t, out))
+		}
+		joinAttempts++
+		cp.handle(t, ws)
+	})
+	defer srv.Close()
+
+	exec := executor.StubRunner(func(_ context.Context, _ executor.Step) (int, error) { return 0, nil })
+
+	r := New(Config{URL: wsURL(srv.URL), RunnerID: "runner-1", BootToken: "boot-1"}, exec)
+	r.joinBackoff = time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	code, err := r.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if joinAttempts != rejectTimes+1 {
+		t.Fatalf("join attempts = %d, want %d (retried past the try_agains)", joinAttempts, rejectTimes+1)
+	}
+}
+
 func TestRunJobHappyPath(t *testing.T) {
-	cp := &scriptedCP{steps: []string{"step-a", "step-b"}}
+	cp := &scriptedCP{steps: []map[string]any{
+		{"command": "make", "name": "compile"},
+		{"command": "make test"},
+	}}
 	srv := newFakeServer(t, cp.handle)
 	defer srv.Close()
 
-	var ranIdx []int
+	var ranCommands []string
 	exec := executor.StubRunner(func(_ context.Context, st executor.Step) (int, error) {
-		ranIdx = append(ranIdx, len(ranIdx))
-		_ = st
+		ranCommands = append(ranCommands, st.Run)
 		return 0, nil
 	})
 
@@ -161,12 +269,14 @@ func TestRunJobHappyPath(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 
-	wantOrder := []string{"phx_join", "job:started", "job:finished"}
+	// job:ack precedes job:started (PRD #35: ack delivery before reporting start).
+	wantOrder := []string{"phx_join", "job:ack", "job:started", "job:finished"}
 	if strings.Join(cp.gotEvents, ",") != strings.Join(wantOrder, ",") {
 		t.Fatalf("event order = %v, want %v", cp.gotEvents, wantOrder)
 	}
-	if len(ranIdx) != 2 {
-		t.Fatalf("ran %d steps, want 2", len(ranIdx))
+	// The executor runs each Step's `command` (the object's command field).
+	if strings.Join(ranCommands, ",") != "make,make test" {
+		t.Fatalf("ran commands = %v, want [make, make test]", ranCommands)
 	}
 
 	var fin struct {
@@ -185,7 +295,11 @@ func TestRunJobHappyPath(t *testing.T) {
 }
 
 func TestRunJobFailingStepReportsNonzeroAndStops(t *testing.T) {
-	cp := &scriptedCP{steps: []string{"ok", "boom", "never"}}
+	cp := &scriptedCP{steps: []map[string]any{
+		{"command": "ok"},
+		{"command": "boom"},
+		{"command": "never"},
+	}}
 	srv := newFakeServer(t, cp.handle)
 	defer srv.Close()
 
