@@ -118,7 +118,10 @@ defmodule AthanorWeb.E2ESmokeTest do
       create_pipeline_job(conn, %{
         "name" => "build",
         "steps" => [
-          %{"command" => "grep -q 'Contributing' CONTRIBUTING.md"},
+          # CONTRIBUTING.md exists only on the non-default `test` branch, so its
+          # presence alone proves git_ref was honoured; asserting on its text
+          # would couple the test to mutable third-party content.
+          %{"command" => "test -f CONTRIBUTING.md"},
           %{"command" => "echo built"}
         ]
       })
