@@ -1,4 +1,7 @@
 defmodule Athanor.Accounts.ApiKey do
+  @moduledoc """
+  API keys issued to users for programmatic access.
+  """
   use Ash.Resource,
     otp_app: :athanor,
     domain: Athanor.Accounts,

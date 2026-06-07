@@ -1,4 +1,7 @@
 defmodule AthanorWeb.AuthOverrides do
+  @moduledoc """
+  UI overrides for the AshAuthentication Phoenix components.
+  """
   use AshAuthentication.Phoenix.Overrides
 
   # configure your UI overrides here

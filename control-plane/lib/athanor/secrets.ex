@@ -1,4 +1,7 @@
 defmodule Athanor.Secrets do
+  @moduledoc """
+  Supplies runtime secrets (e.g. the token signing secret) to AshAuthentication.
+  """
   use AshAuthentication.Secret
 
   def secret_for(
