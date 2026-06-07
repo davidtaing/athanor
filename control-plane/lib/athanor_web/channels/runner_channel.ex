@@ -41,15 +41,20 @@ defmodule AthanorWeb.RunnerChannel do
            verdict: "continue"
          }, socket}
 
-      {:error, reason} ->
-        # Echo the protocol version so a mismatched/rejected Runner fails fast
+      {:error, code, detail} ->
+        # The wire carries exactly two coarse rejection codes (PRD #35):
+        # `invalid_credentials` (fatal) or `try_again` (transient). The specific
+        # cause is logged server-side only — never leaked to an unauthenticated
+        # caller. The protocol version is echoed so a rejected Runner fails fast
         # and loudly in its container logs (PRD Versioning).
-        {:error, %{protocol_version: @protocol_version, reason: reason}}
+        Logger.info("runner_channel join rejected (#{code}): #{detail}")
+        {:error, %{protocol_version: @protocol_version, reason: to_string(code)}}
     end
   end
 
   def join(_topic, _params, _socket) do
-    {:error, %{protocol_version: @protocol_version, reason: "unknown_topic"}}
+    # An unknown topic version is a definitive rejection (PRD Versioning).
+    {:error, %{protocol_version: @protocol_version, reason: "invalid_credentials"}}
   end
 
   @impl true
@@ -60,6 +65,21 @@ defmodule AthanorWeb.RunnerChannel do
   end
 
   @impl true
+  def handle_in("job:ack", _params, socket) do
+    # The Runner acknowledges delivery of its job:assign. Stamp the fact on the
+    # Job (PRD #35); a duplicate keeps the first stamp (ack-and-ignore, invariant
+    # 2). This records what future rejoin logic reads — it drives no state.
+    job = current_job(socket)
+
+    job
+    |> Ash.Changeset.for_update(:acknowledge, %{})
+    |> Ash.update()
+    |> case do
+      {:ok, _acked} -> {:reply, :ok, socket}
+      result -> unexpected_transition_error(socket, :acknowledge, result)
+    end
+  end
+
   def handle_in("job:started", _params, socket) do
     # Drives assigned -> running; duplicate on an already-running (or terminal)
     # Job is ack-and-ignore (invariant 2).
@@ -89,22 +109,38 @@ defmodule AthanorWeb.RunnerChannel do
 
   # --- internals ---
 
+  # Returns {:ok, runner, session_token} or {:error, code, detail}, where code is
+  # `:invalid_credentials` (fatal: burned/expired/unknown token, missing params,
+  # unknown topic) or `:try_again` (a transient internal fault evaluating an
+  # otherwise well-formed join — a DB blip, not a bad credential). The split is
+  # the bug fix in #35: the old catch-all laundered transient faults into a fatal
+  # credential rejection, burning a boot attempt on a healthy Job.
   defp authenticate(runner_id, %{"boot_token" => boot_token}) do
+    maybe_inject_transient_fault(runner_id)
+
     with {:ok, runner} <- fetch_runner(runner_id),
          true <- secure_compare(runner.boot_token, boot_token),
          {:ok, joined} <- burn_boot_token(runner) do
       {:ok, joined, joined.session_token}
     else
-      _ -> {:error, "invalid_boot_token"}
+      {:error, :invalid_credentials, detail} -> {:error, :invalid_credentials, detail}
+      false -> {:error, :invalid_credentials, "boot token mismatch"}
+      :credential_error -> {:error, :invalid_credentials, "boot token burned or expired"}
     end
+  rescue
+    # A genuine internal fault while evaluating the join (e.g. a DB error). Tell
+    # the Runner to retry rather than fail it fast (PRD #35 user story 7).
+    error ->
+      {:error, :try_again, "transient fault evaluating join: #{Exception.message(error)}"}
   end
 
-  defp authenticate(_runner_id, _params), do: {:error, "missing_credentials"}
+  defp authenticate(_runner_id, _params),
+    do: {:error, :invalid_credentials, "missing credentials"}
 
   defp fetch_runner(runner_id) do
     case Ash.get(Runner, runner_id) do
       {:ok, runner} -> {:ok, runner}
-      _ -> :error
+      {:error, _} -> {:error, :invalid_credentials, "unknown runner"}
     end
   end
 
@@ -112,6 +148,26 @@ defmodule AthanorWeb.RunnerChannel do
     runner
     |> Ash.Changeset.for_update(:join, %{})
     |> Ash.update()
+    |> case do
+      {:ok, joined} ->
+        {:ok, joined}
+
+      # The :join action adds a field error when the token is already burned or
+      # expired — a credential rejection, not a transient fault.
+      {:error, %Ash.Error.Invalid{}} ->
+        :credential_error
+    end
+  end
+
+  # Test seam: a configured Runner id forces a transient internal fault during
+  # join evaluation, so the rejection-split can be exercised at the Channel seam
+  # (the `Athanor.Provisioner.Raising` precedent). Keyed on a unique Runner id so
+  # the global config can never trip a different Runner's join. No-op in prod
+  # (the key is unset).
+  defp maybe_inject_transient_fault(runner_id) do
+    if Application.get_env(:athanor, :runner_channel_transient_fault_runner_id) == runner_id do
+      raise "injected transient fault evaluating join for runner #{runner_id}"
+    end
   end
 
   # Constant-time compare so a missing/short token can't be distinguished by timing.

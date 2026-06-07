@@ -80,6 +80,39 @@ defmodule AthanorWeb.RunnerChannelTest do
 
       assert {:error, _reply} = connect_and_join(expired, %{"boot_token" => expired.boot_token})
     end
+
+    test "a first join inside the derived TTL window (boot timeout + sweep − ε) succeeds", %{
+      runner: runner
+    } do
+      # The TTL is derived = boot timeout + one sweep interval (PRD #35); a
+      # legitimate late join any time the sweep would still accept it must
+      # succeed. Place expiry an ε in the future to model a join at the very edge
+      # of the window.
+      late =
+        runner
+        |> Ash.Changeset.for_update(:update, %{})
+        |> Ash.Changeset.force_change_attribute(
+          :boot_token_expires_at,
+          DateTime.add(DateTime.utc_now(), 1, :second)
+        )
+        |> Ash.update!()
+
+      assert {:ok, reply, _socket} = connect_and_join(late, %{"boot_token" => late.boot_token})
+      assert reply.verdict == "continue"
+    end
+
+    test "a first join past the derived TTL window is rejected", %{runner: runner} do
+      past =
+        runner
+        |> Ash.Changeset.for_update(:update, %{})
+        |> Ash.Changeset.force_change_attribute(
+          :boot_token_expires_at,
+          DateTime.add(DateTime.utc_now(), -1, :second)
+        )
+        |> Ash.update!()
+
+      assert {:error, _reply} = connect_and_join(past, %{"boot_token" => past.boot_token})
+    end
   end
 
   describe "job:assign / job:started / job:finished" do
@@ -95,6 +128,27 @@ defmodule AthanorWeb.RunnerChannelTest do
       assert payload.git_ref == "main"
       assert payload.steps == [%{"command" => "make"}]
       assert %{max_bytes: _, max_interval: _} = payload.log
+    end
+
+    test "job:ack stamps the acknowledgement timestamp on the Job", %{socket: socket, job: job} do
+      assert Ash.get!(Athanor.Pipelines.Job, job.id).acknowledged_at == nil
+
+      push(socket, "job:ack", %{}) |> assert_reply(:ok)
+
+      assert %DateTime{} = Ash.get!(Athanor.Pipelines.Job, job.id).acknowledged_at
+    end
+
+    test "duplicate job:ack is acked and ignored, keeping the first stamp", %{
+      socket: socket,
+      job: job
+    } do
+      push(socket, "job:ack", %{}) |> assert_reply(:ok)
+      first = Ash.get!(Athanor.Pipelines.Job, job.id).acknowledged_at
+
+      push(socket, "job:ack", %{}) |> assert_reply(:ok)
+      second = Ash.get!(Athanor.Pipelines.Job, job.id).acknowledged_at
+
+      assert second == first
     end
 
     test "job:started drives assigned -> running", %{socket: socket, job: job} do

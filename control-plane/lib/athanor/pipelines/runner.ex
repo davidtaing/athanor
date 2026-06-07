@@ -36,10 +36,13 @@ defmodule Athanor.Pipelines.Runner do
       primary? true
       accept [:job_id]
 
-      argument :boot_token_ttl_seconds, :integer, default: 60
-
       change fn changeset, _context ->
-        ttl = Ash.Changeset.get_argument(changeset, :boot_token_ttl_seconds)
+        # The Boot Token TTL is *derived* from the two existing config values at
+        # token creation (PRD #35): TTL = boot timeout + one sweep interval. Not
+        # an independent knob — a TTL equal to the boot timeout would reject
+        # legitimate late joins the sweep would still accept (deadlines are
+        # sweep-enforced with ±one-interval slack).
+        ttl_ms = Athanor.Pipelines.Runner.derived_boot_token_ttl_ms()
 
         changeset
         |> Ash.Changeset.force_change_attribute(
@@ -48,7 +51,7 @@ defmodule Athanor.Pipelines.Runner do
         )
         |> Ash.Changeset.force_change_attribute(
           :boot_token_expires_at,
-          DateTime.add(DateTime.utc_now(), ttl, :second)
+          DateTime.add(DateTime.utc_now(), ttl_ms, :millisecond)
         )
       end
     end
@@ -113,5 +116,15 @@ defmodule Athanor.Pipelines.Runner do
   @doc false
   def random_token do
     :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+  end
+
+  @doc """
+  The derived Boot Token TTL in milliseconds (PRD #35): boot timeout + one sweep
+  interval. Computed from the two existing config values, never an independent
+  knob. At defaults this is 60 s + 30 s = 90 s.
+  """
+  def derived_boot_token_ttl_ms do
+    Application.fetch_env!(:athanor, :boot_timeout) +
+      Application.fetch_env!(:athanor, :scheduler_sweep_interval)
   end
 end

@@ -55,7 +55,11 @@ defmodule AthanorWeb.PipelineControllerTest do
     end
 
     test "rollup status of a fresh Pipeline with runnable work is pending", %{conn: conn} do
-      conn = create(conn, [%{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}])
+      conn =
+        create(conn, [
+          %{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}
+        ])
+
       assert %{"data" => %{"status" => "pending"}} = json_response(conn, 201)
     end
 
@@ -77,7 +81,11 @@ defmodule AthanorWeb.PipelineControllerTest do
     end
 
     test "every Job state carries a transition timestamp", %{conn: conn} do
-      conn = create(conn, [%{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}])
+      conn =
+        create(conn, [
+          %{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}
+        ])
+
       [job] = json_response(conn, 201)["data"]["jobs"]
       assert is_binary(job["created_at"])
       assert is_binary(job["state_changed_at"])
@@ -241,7 +249,9 @@ defmodule AthanorWeb.PipelineControllerTest do
   describe "GET /api/jobs/:id" do
     test "returns the Job's state and timing", %{conn: conn} do
       [job] =
-        create(conn, [%{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}])
+        create(conn, [
+          %{"name" => "build", "image" => "alpine:3", "steps" => [%{"command" => "make"}]}
+        ])
         |> json_response(201)
         |> get_in(["data", "jobs"])
 
