@@ -86,9 +86,13 @@ Timer definitions (the precise semantics issue #10 needs):
 
 - **Boot timeout**: measured from the Provisioner's boot call to first join.
   No join within it ⇒ Runner declared dead, Job re-queued (story 18).
+  Re-queue is bounded by **max boot attempts** (default 3): exhaustion fails
+  the Job with reason boot-failure instead of looping container churn.
 - **Grace period**: measured from channel-process termination. Reconnection
-  within it resumes per the rejoin rules; expiry applies the failure rules
-  (assigned ⇒ re-queue; running ⇒ failed, reason runner-lost).
+  within it resumes per the rejoin rules; expiry fails the Job (reason
+  runner-lost) whether assigned or running — never a re-queue. A Runner that
+  has joined may already hold its Job definition, so post-join loss is never
+  silently retried; only the boot timeout (never joined) re-queues.
 - A control-plane restart kills every channel process *from our side*;
   Runners auto-reconnect with Session Tokens and resync. Recovery treats
   this identically to a Runner blip — the grace period absorbs it, no
@@ -179,7 +183,7 @@ topic scheme survives a framing change.
 | `job:assign` | CP → R | job id, git URL + ref, ordered Steps, env, log batching config (`max_bytes`, `max_interval`) | ack | Idempotent on Runner; re-sent after rejoin if still unacked. No image (Runner is already inside it), no timeout (control-plane enforced) |
 | `job:started` | R → CP | `{}` | ack | Drives assigned → running; duplicate = ack-and-ignore |
 | `log:chunk` | R → CP | `{seq, step_index, content}` | ack (after LogStore handoff) | At-least-once; resent after rejoin until acked |
-| `job:finished` | R → CP | `{result, exit_code, failed_step_index?}` | ack | Only after all chunks acked; drives running → succeeded / failed (reason: nonzero exit); duplicate = ack-and-ignore. Runner exits after the ack |
+| `job:finished` | R → CP | `{exit_code, failed_step_index?}` | ack | Facts only — no verdict field; the CP derives it (exit 0 ⇒ succeeded; nonzero ⇒ failed, reason: nonzero exit). Sent only after all chunks acked; duplicate = ack-and-ignore. Runner exits after the ack |
 | `job:cancel` | CP → R | `{}` | — | Shared by user cancel / pipeline cancel / timeout; ≡ rejoin `stop`; no ack — drain deadline + force-destroy instead |
 
 ## Configuration (one visible place, per the MVP PRD)
@@ -187,6 +191,7 @@ topic scheme survives a framing change.
 | Value | Default | Measured from |
 |---|---|---|
 | Boot timeout | conservative (e.g. 60 s) | Provisioner boot call → first join |
+| Max boot attempts | 3 | per Provisioner boot call for the Job; exhaustion ⇒ failed (boot failure) |
 | Grace period | conservative (e.g. 30 s) | channel-process termination |
 | Job timeout (default) | per MVP PRD | `job:started` |
 | Cancel-drain deadline | 10 s | `job:cancel` push / drain start |
@@ -224,6 +229,12 @@ Protocol paths land on the seams the MVP PRD already declares:
 - Decisions here came out of the 2026-06-07 design session; rationale is
   recorded inline above rather than in separate ADRs because each choice is
   additive/reversible at the protocol layer (no ADR meets the bar).
+- **Backlog (post-MVP, not designed here)**: Rerun — re-run all / re-run
+  failed-from-point-of-failure (GH Actions style), modeled as new Job
+  attempts; terminal states are never resurrected. Auto-retry policy keyed
+  on Failure Reason (e.g. `retry: [boot_failure, runner_lost]`, never
+  `nonzero_exit` — the GitLab model) rides the same attempts model. In the
+  MVP, "rerun" means re-creating the Pipeline.
 - Binding references: `CONTEXT.md` (glossary, incl. Boot Token and Session
   Token), ADRs 0001–0004, MVP PRD (`docs/prd/athanor-mvp.md`) stories 16–34
   and 35–40.

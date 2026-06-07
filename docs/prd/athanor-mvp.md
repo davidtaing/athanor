@@ -39,7 +39,7 @@ Terms follow the project glossary (`CONTEXT.md`): Pipeline, Job, Step, Dependenc
 
 16. As an operator, I want every Job to execute in its own freshly booted Runner that is destroyed when the Job ends, so that no state leaks between Jobs.
 17. As an operator, I want the Provisioner to pre-register a Runner identity and one-time boot token before booting the container, so that only Runners I booted can connect.
-18. As an operator, I want a Runner that never connects within the boot timeout to be declared dead and its Job re-queued, so that boot failures self-heal.
+18. As an operator, I want a Runner that never connects within the boot timeout to be declared dead and its Job re-queued (up to a max-boot-attempts cap, default 3, after which the Job fails with reason boot failure), so that transient boot failures self-heal and persistent ones become a visible verdict instead of container churn.
 19. As an operator, I want a one-time token to be rejected on reuse or after expiry, so that a leaked token is worthless.
 20. As an operator, I want the Runner to receive its Job over the Channel after connecting (not baked into the container at boot), so that dispatch is uniform and acknowledged.
 21. As an operator, I want the Job to transition to running only when the Runner acknowledges execution has started, so that the assigned state faithfully means "dispatched but unconfirmed".
@@ -48,7 +48,7 @@ Terms follow the project glossary (`CONTEXT.md`): Pipeline, Job, Step, Dependenc
 
 ### Failure handling
 
-24. As an operator, I want a Job whose Runner disconnects while assigned (before ack) to return to queued after a grace period, so that a lost boot is retried safely.
+24. As an operator, I want a Job whose Runner disconnects after first join — whether assigned or running — to be marked failed (reason: runner lost) after the grace period, so that a Runner that may already hold its Job definition never silently runs twice. Only a Runner that never joined (boot timeout, story 18) is re-queued; everything after first join is fail-and-manually-rerun.
 25. As an operator, I want a Job whose Runner disconnects while running to be marked failed (not retried) after the grace period, so that non-idempotent Steps never run twice.
 26. As an operator, I want a brief network blip within the grace period to not kill a Job, so that connection flaps don't fail healthy work.
 27. As an operator, I want the control plane (not the Runner) to enforce Job timeouts, so that a stuck Runner cannot exempt itself.
@@ -95,7 +95,7 @@ All decided in ADRs 0001–0004 and the June 2026 design session; the PRD record
 - **Runner transport**: persistent WebSocket speaking the Phoenix Channels wire protocol (ADR 0001). The Go runner uses an existing Channels client library. Protocol messages cover: join-with-boot-token (registration), job dispatch, start ack, log chunks, completion with exit status, cancel push. Connection liveness is a signal, not proof of death — a grace period applies before declaring a Runner lost.
 - **Ephemeral Runners** (ADR 0003): one Runner per Job, booted on demand, destroyed at terminal state. No long-lived runner daemon exists anywhere.
 - **Provisioner**: an Elixir component inside the control plane, defined as a behaviour. The production implementation drives the Docker Engine API over the local unix socket. Single-host assumption. Boot-per-job; no warm pool. It creates the Runner record and one-time token before booting, and force-destroys containers on timeout/cancel.
-- **Scheduling**: no runner matching exists. Job becomes queued → control plane asks the Provisioner to boot a Runner for that specific Job → Job is assigned. Assigned means "dispatched/booting, not yet acknowledged"; recovery rules attach there (no ack within boot timeout ⇒ re-queue).
+- **Scheduling**: no runner matching exists. Job becomes queued → control plane asks the Provisioner to boot a Runner for that specific Job → Job is assigned. Assigned means "dispatched/booting, not yet acknowledged"; recovery rules attach there. The recovery line is **first join**: never joins within the boot timeout ⇒ re-queue (provably never received the Job); lost any time after first join ⇒ failed, reason runner-lost (Steps may have run — never silently retried). Decided 2026-06-07, superseding the earlier requeue-while-assigned rule.
 - **Failure reasons are data, not states**: failed carries a reason (nonzero exit, timeout, runner lost, boot failure). The state machine stays at seven states.
 - **Timeouts**: per-Job with a global default, enforced by the control plane. No automatic retries of any kind in the MVP.
 - **Logs** (ADR 0004): Runner streams batched chunks over its Channel; control plane re-broadcasts on PubSub for live tail and flushes to object storage as per-Job chunk objects; a seal step concatenates on terminal state. All access goes through a LogStore behaviour. minio in docker-compose locally.
