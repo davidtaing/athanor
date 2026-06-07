@@ -128,8 +128,8 @@ Delivery is **at-least-once, sequenced, acknowledged**:
   pipe-backpressure path pauses the Job losslessly until the store recovers.
   Live tail keeps working (PubSub broadcast happens before the LogStore
   write; dedup-by-seq absorbs re-broadcast on resend). Accepted wart: the
-  job-timeout clock keeps ticking during a stall, so an outage outliving the
-  job timeout surfaces as `timeout` rather than a store-specific reason.
+  Job-timeout clock keeps ticking during a stall, so an outage outliving the
+  Job timeout surfaces as `timeout` rather than a store-specific reason.
   Accepted because transient blips (minio restarts in dev, S3 `503
   SlowDown` in production) vastly outnumber sustained outages; alternatives
   (dropping chunks, failing fast, or pausing the clock) trade away

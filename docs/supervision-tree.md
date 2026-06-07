@@ -6,7 +6,7 @@ Decided in the 2026-06-07 control-plane design session. Companion to
 
 ## The tree
 
-```
+```text
 Athanor.Application
 ├── Athanor.Repo               Postgres — the only owner of state (ADR 0002)
 ├── Phoenix.PubSub             log fan-out for live tail; scheduler nudges
@@ -61,13 +61,13 @@ clock:
 | Deadline | Written at |
 |---|---|
 | `boot_deadline_at` | dispatch (`queued → assigned`) |
-| job-timeout deadline | `job:started` (`assigned → running`) |
+| Job-timeout deadline | `job:started` (`assigned → running`) |
 | grace deadline | Channel process down-handler, on socket drop |
 
 The sweep's query includes deadline-expired rows; enforcement precision is
 the deadline plus at most one sweep interval — irrelevant for CI. Anchoring
 each clock to its own transition means a slow boot never consumes job
-budget. A control-plane restart loses no deadlines, because there is
+budget. A control-plane restart loses no deadlines because there is
 nothing in memory to lose.
 
 ## Athanor.Provisioner — a module, not a server
@@ -81,7 +81,8 @@ store.
 **Nobody watches a boot Task.** If one hangs forever, recovery is the
 deadline machinery, not a monitor: `boot_deadline_at` expires → the sweep
 notices → first-join rule re-queues the Job (max boot attempts, then
-`failed (boot_failure)`) and force-destroys the half-booted container. A
+failed with reason `boot_failure`) and force-destroys the half-booted
+container. A
 zombie container that finishes booting late is rejected at join by its
 burned Boot Token. Hanging, crashing, and vanishing all collapse into the
 same code path: *deadline expired, never joined*.
@@ -107,4 +108,4 @@ the protocol PRD's log-streaming section.
 
 The last row is the point: a full control-plane restart is not a special
 case. It is every per-process failure at once, and the recovery story is
-the same one, because no process owned anything.
+the same one because no process owned anything.
