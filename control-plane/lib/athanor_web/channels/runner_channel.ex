@@ -61,6 +61,10 @@ defmodule AthanorWeb.RunnerChannel do
   @impl true
   def handle_info({:after_join, runner}, socket) do
     job = job_for_runner(runner)
+    # Stamp the Job id on the socket so the log:chunk hot path never re-loads the
+    # Runner just to namespace the chunk objects (the Job id is the chunk
+    # object's prefix, ADR 0004).
+    socket = assign(socket, :job_id, job.id)
     push(socket, "job:assign", assign_payload(job))
     {:noreply, socket}
   end
@@ -105,6 +109,34 @@ defmodule AthanorWeb.RunnerChannel do
     # A malformed payload (missing / non-integer exit_code) carries no fact we
     # can derive a verdict from; reject it without touching Job state rather
     # than silently counting it as success.
+    {:reply, {:error, %{reason: "invalid_payload"}}, socket}
+  end
+
+  def handle_in(
+        "log:chunk",
+        %{"seq" => seq, "step_index" => step_index, "content" => content},
+        socket
+      )
+      when is_integer(seq) and is_integer(step_index) and is_binary(content) do
+    # Liberal receiver (PRD log-streaming): any seq is accepted — the Channel
+    # holds no per-Job seq state (ADR 0002). The chunk is broadcast for live
+    # tail, then handed to the LogStore; the ack is sent only after a durable
+    # write. On a store failure we withhold the ack (no reply) so the Runner's
+    # bounded-buffer → pipe-backpressure path stalls losslessly until the store
+    # recovers — never drop, never fail. Contiguity is enforced once at seal.
+    job_id = socket.assigns.job_id
+
+    case Athanor.Logs.handle_chunk(job_id, seq, step_index, content) do
+      :ok ->
+        {:reply, :ok, socket}
+
+      {:error, reason} ->
+        Logger.warning("log:chunk persist stalled for job #{job_id}: #{inspect(reason)}")
+        {:noreply, socket}
+    end
+  end
+
+  def handle_in("log:chunk", _params, socket) do
     {:reply, {:error, %{reason: "invalid_payload"}}, socket}
   end
 
@@ -235,6 +267,13 @@ defmodule AthanorWeb.RunnerChannel do
     |> Ash.update()
     |> case do
       {:ok, transitioned} ->
+        # Seal the log on the first terminal transition (ADR 0004): concatenate
+        # the surviving chunk objects into one sealed object and delete them.
+        # Driven here, where the terminal fact lands, and only on the first
+        # transition — a duplicate job:finished must not re-seal and clobber the
+        # sealed object with an empty one. job:finished is sent only after every
+        # chunk is acked (PRD), so by here the chunks are all durably present.
+        maybe_seal(transitioned)
         # A terminal transition makes the Job's Dependency edges mean something
         # (issue #9): success enqueues newly-runnable dependents, failure skips
         # transitive dependents. The DAG advance is driven from the same place
@@ -303,6 +342,17 @@ defmodule AthanorWeb.RunnerChannel do
        do: Athanor.Pipelines.advance(job)
 
   defp maybe_advance(_job), do: :ok
+
+  # Seal the Job's log when it reaches a terminal verdict (ADR 0004). Runs only
+  # on the first terminal transition (see the call site). A skip/cancel has no
+  # Runner-streamed log; sealing an empty chunk set yields an empty object,
+  # which is harmless and keeps the fetch path uniform (always a sealed object
+  # once terminal).
+  defp maybe_seal(%{state: state, id: job_id})
+       when state in [:succeeded, :failed, :skipped, :canceled],
+       do: Athanor.Logs.seal(job_id)
+
+  defp maybe_seal(_job), do: :ok
 
   # Destroy the Runner's container once its Job is terminal. Runs as a supervised,
   # short-lived Task under the Provisioner's Task.Supervisor (docs/supervision-

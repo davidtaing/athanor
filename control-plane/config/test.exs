@@ -1,5 +1,10 @@
 import Config
 config :athanor, Oban, testing: :manual
+
+# Control-plane tests use the in-memory LogStore (ADR 0004's swappable backend);
+# minio is exercised only by the narrow integration tests. Started as a singleton
+# Agent in the supervision tree (see Athanor.Application).
+config :athanor, :log_store, Athanor.LogStore.InMemory
 config :athanor, token_signing_secret: "jPjvNXmKjiBTLF2mhI7iaEoXVdbbUJIk"
 
 # MVP static bearer token for tests (avoids Application.put_env in async tests).

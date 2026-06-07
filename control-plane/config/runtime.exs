@@ -23,6 +23,20 @@ end
 config :athanor, AthanorWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# LogStore backend (ADR 0004). The test suite overrides this to the in-memory
+# store (config/test.exs); every running environment uses minio/S3. Credentials
+# and endpoint come from the environment (the docker-compose stack injects them).
+unless config_env() == :test do
+  config :athanor, :log_store, Athanor.LogStore.Minio
+
+  config :athanor, Athanor.LogStore.Minio,
+    endpoint_url: System.get_env("MINIO_ENDPOINT", "http://localhost:9000"),
+    access_key_id: System.get_env("MINIO_ACCESS_KEY", "minioadmin"),
+    secret_access_key: System.get_env("MINIO_SECRET_KEY", "minioadmin"),
+    bucket: System.get_env("MINIO_BUCKET", "athanor-logs"),
+    region: System.get_env("AWS_REGION", "us-east-1")
+end
+
 # MVP static bearer token. Read from the environment in every environment so
 # the docker-compose stack can inject it; required (non-empty) in prod.
 api_token = System.get_env("ATHANOR_API_TOKEN")

@@ -30,10 +30,39 @@ defmodule Athanor.Application do
       {Task.Supervisor, name: Athanor.Provisioner.TaskSupervisor}
     ]
 
+    # The in-memory LogStore is a stateful singleton (an Agent); start it only
+    # when it is the configured backend (the test suite). The minio backend is
+    # stateless — it holds no process (ADR 0004).
+    children =
+      if Application.get_env(:athanor, :log_store) == Athanor.LogStore.InMemory do
+        children ++ [Athanor.LogStore.InMemory]
+      else
+        children
+      end
+
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Athanor.Supervisor]
-    Supervisor.start_link(children, opts)
+
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      ensure_log_bucket()
+      {:ok, pid}
+    end
+  end
+
+  # Create the logs bucket once at startup when minio is the backend (ADR 0004).
+  # Idempotent; best-effort — a transient minio blip at boot must not crash the
+  # control plane, and the bucket is also created by the compose stack.
+  defp ensure_log_bucket do
+    if Application.get_env(:athanor, :log_store) == Athanor.LogStore.Minio do
+      try do
+        Athanor.LogStore.Minio.ensure_bucket()
+      rescue
+        error ->
+          require Logger
+          Logger.warning("could not ensure log bucket at startup: #{inspect(error)}")
+      end
+    end
   end
 
   # Tell Phoenix to update the endpoint configuration
