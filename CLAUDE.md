@@ -59,6 +59,29 @@ Default to Elixir; Go is for the runner only.
 - **0004** — log content lives in minio/S3 behind a `LogStore` behaviour;
   Postgres never stores logs. Live tail via PubSub.
 
+## Branching & CI
+
+- **GitHub Flow**: short-lived branches (`slice/*`, `chore/*`, …) → PR →
+  `main`. No `develop` branch. `main` is protected: PR required, CI checks
+  (`elixir`, `go`) must be green; David merges every PR himself.
+- **Releases are tag-gated**: artifacts (control-plane image, runner
+  binaries, runner container/microVM image) are built only on `v*` tags,
+  never on pushes to `main`. No release workflow exists yet — deferred
+  until there's a first artifact consumer.
+- **Versions**: root `.tool-versions` is the source of truth for
+  Elixir/Erlang (CI reads it via `erlef/setup-beam`; asdf locally). For Go,
+  `go.mod`'s `toolchain` directive is canonical; the `golang` line in
+  `.tool-versions` is asdf convenience. `control-plane/Dockerfile` ARGs are
+  synced manually on upgrades.
+- **CI shape**: single `.github/workflows/ci.yml` — a `changes` job
+  (dorny/paths-filter) gates per-component `elixir` and `go` jobs, so
+  job-level skips keep required checks satisfiable. A build-only Docker
+  image job runs on pushes to `main` to catch Dockerfile rot.
+- **Checks**: Elixir — compile/test with `--warnings-as-errors`,
+  `format --check-formatted`, `deps.unlock --check-unused`, credo
+  (dialyzer/sobelow deliberately deferred). Go — build, test,
+  golangci-lint (subsumes vet).
+
 ## MVP cut-line
 
 API-triggered pipelines only (no webhooks/in-repo YAML), public repos only,

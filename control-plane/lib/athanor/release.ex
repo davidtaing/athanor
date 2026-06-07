@@ -21,9 +21,14 @@ defmodule Athanor.Release do
 
     for repo <- repos() do
       case repo.__adapter__().storage_up(repo.config()) do
-        :ok -> :ok
-        {:error, :already_up} -> :ok
-        {:error, reason} -> raise "Failed to create database for #{inspect(repo)}: #{inspect(reason)}"
+        :ok ->
+          :ok
+
+        {:error, :already_up} ->
+          :ok
+
+        {:error, reason} ->
+          raise "Failed to create database for #{inspect(repo)}: #{inspect(reason)}"
       end
     end
   end

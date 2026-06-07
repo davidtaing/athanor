@@ -1,9 +1,10 @@
 # Multi-stage build for the Athanor control plane (OTP app `athanor`).
 # Produces a self-contained OTP release run by the runtime image.
 
-ARG ELIXIR_VERSION=1.18.4
-ARG OTP_VERSION=27.3.4
-ARG DEBIAN_VERSION=bookworm-20250520
+# Canonical version pin lives in the root `.tool-versions`; keep these in sync.
+ARG ELIXIR_VERSION=1.20.0
+ARG OTP_VERSION=29.0.1
+ARG DEBIAN_VERSION=bookworm-20260518
 
 ARG BUILDER_IMAGE="hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION}-slim"
 ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}-slim"
