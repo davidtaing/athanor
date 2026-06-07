@@ -85,6 +85,17 @@ Default to Elixir; Go is for the runner only.
   (dialyzer/sobelow deliberately deferred). Go — build, test,
   golangci-lint (subsumes vet).
 
+## Issue queue labels
+
+- **`exploration`** — deferred non-product work: grill topics, parked
+  questions, research follow-ups, side tasks. Excluded from issue-sizing
+  and run plans. When something is parked mid-session ("park it", "later",
+  "post-MVP question"), file an `exploration` issue with context + trigger
+  condition before the session ends — deferred items must not live only in
+  session memory.
+- **`backlog`** — deliberately deferred *product scope* (post-MVP/post-1.0);
+  needs a design session before slicing. Don't conflate with `exploration`.
+
 ## MVP cut-line
 
 API-triggered pipelines only (no webhooks/in-repo YAML), public repos only,
