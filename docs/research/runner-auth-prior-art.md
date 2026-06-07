@@ -97,7 +97,7 @@ top tier is a post-MVP direction, not a gap.
 4. **Token prefixes for secret scanning.** GitLab prefixes runner tokens
    (`glrt-`) so leaked tokens are machine-recognizable
    ([GitLab token docs](https://docs.gitlab.com/security/tokens/)). An
-   `athnr_boot_` / `athnr_sess_` prefix is nearly free and pays off the first
+   `athanor_boot_` / `athanor_sess_` prefix is nearly free and pays off the first
    time a token lands in a log or a pasted bug report.
 
 ### Explicitly fine because runners are single-job ephemeral
