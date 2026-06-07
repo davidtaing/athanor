@@ -18,6 +18,7 @@ defmodule Athanor.Pipelines.DagAdvance do
   """
 
   require Ash.Query
+  require Logger
 
   alias Athanor.Pipelines.Job
   alias Athanor.Scheduler
@@ -52,7 +53,7 @@ defmodule Athanor.Pipelines.DagAdvance do
     newly_queued =
       siblings
       |> Enum.filter(&waiting_and_runnable?(&1, job.name, succeeded_names))
-      |> Enum.map(&enqueue/1)
+      |> Enum.flat_map(&enqueue/1)
 
     # Events for speed, sweep for correctness (docs/supervision-tree.md): nudge
     # only when we actually produced runnable work.
@@ -89,26 +90,43 @@ defmodule Athanor.Pipelines.DagAdvance do
 
   defp do_skip([failed_name | rest], by_name) do
     {newly_skipped, by_name} =
-      Enum.reduce(by_name, {[], by_name}, fn {name, candidate}, {skipped, acc} ->
-        if failed_name in candidate.needs and candidate.state in [:waiting, :queued] do
-          {[name | skipped], Map.put(acc, name, skip(candidate))}
-        else
-          {skipped, acc}
-        end
-      end)
+      Enum.reduce(by_name, {[], by_name}, &maybe_skip(&1, &2, failed_name))
 
     do_skip(rest ++ newly_skipped, by_name)
   end
 
-  defp enqueue(job) do
-    job
-    |> Ash.Changeset.for_update(:enqueue)
-    |> Ash.update!()
+  # Skip one dependent of `failed_name` if it's still skippable. A skip that
+  # fails leaves the candidate where it is and out of the frontier; one bad
+  # dependent must not abort the cascade.
+  defp maybe_skip({name, candidate}, {skipped, acc}, failed_name) do
+    skippable? = failed_name in candidate.needs and candidate.state in [:waiting, :queued]
+
+    case skippable? && skip(candidate) do
+      [updated] -> {[name | skipped], Map.put(acc, name, updated)}
+      _ -> {skipped, acc}
+    end
   end
 
-  defp skip(job) do
+  # A failed update on one dependent must not abort the whole traversal: log it
+  # and skip that Job, letting the pass continue. Each driver returns a list so
+  # callers can drop the failures with flat_map / an empty-list case.
+  defp enqueue(job), do: drive(job, :enqueue)
+  defp skip(job), do: drive(job, :skip)
+
+  defp drive(job, action) do
     job
-    |> Ash.Changeset.for_update(:skip)
-    |> Ash.update!()
+    |> Ash.Changeset.for_update(action)
+    |> Ash.update()
+    |> case do
+      {:ok, updated} ->
+        [updated]
+
+      {:error, error} ->
+        Logger.error(
+          "dag_advance #{action} failed for job #{job.id} (#{job.name}): #{inspect(error)}"
+        )
+
+        []
+    end
   end
 end

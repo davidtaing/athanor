@@ -157,7 +157,7 @@ defmodule AthanorWeb.RunnerChannel do
       # ack-and-ignore that one case, not error.
       {:error, %Ash.Error.Invalid{} = error} = result ->
         if no_matching_transition?(error) do
-          {:reply, :ok, socket}
+          ack_duplicate(socket, action)
         else
           unexpected_transition_error(socket, action, result)
         end
@@ -165,6 +165,16 @@ defmodule AthanorWeb.RunnerChannel do
       result ->
         unexpected_transition_error(socket, action, result)
     end
+  end
+
+  # Ack a duplicate (already running / already terminal) transition. For a
+  # *terminal* fact, re-drive the DAG first: if the first finished's advancement
+  # failed after the state write, this duplicate is the only remaining signal,
+  # so dependents would otherwise strand in :waiting. Advancement is idempotent
+  # — it reads rows and drives transitions that no-op when already done.
+  defp ack_duplicate(socket, action) do
+    if terminal_action?(action), do: maybe_advance(current_job(socket))
+    {:reply, :ok, socket}
   end
 
   defp no_matching_transition?(%Ash.Error.Invalid{errors: errors}) do
@@ -191,4 +201,6 @@ defmodule AthanorWeb.RunnerChannel do
        do: Athanor.Pipelines.advance(job)
 
   defp maybe_advance(_job), do: :ok
+
+  defp terminal_action?(action), do: action in [:succeed, :fail, :skip, :cancel]
 end

@@ -136,6 +136,33 @@ defmodule AthanorWeb.DagSchedulingTest do
     assert state("d") == :skipped
   end
 
+  test "a duplicate job:finished still acks and leaves dependents advanced" do
+    # If the first finished's advancement had failed after the state write, the
+    # duplicate is the only remaining signal — it must re-drive the DAG, not
+    # ack-and-drop. Here advancement already succeeded, so the duplicate is a
+    # no-op re-advance: it must still ack and leave b/c queued, never regressed.
+    diamond()
+    Scheduler.dispatch_queued()
+
+    runner = runner_for("a")
+    {:ok, socket} = connect(RunnerSocket, %{})
+
+    {:ok, _reply, socket} =
+      subscribe_and_join(socket, "runner:v1:#{runner.id}", %{"boot_token" => runner.boot_token})
+
+    assert_push "job:assign", _payload
+    push(socket, "job:started", %{}) |> assert_reply(:ok)
+    push(socket, "job:finished", %{"exit_code" => 0}) |> assert_reply(:ok)
+    assert state("b") == :queued
+    assert state("c") == :queued
+
+    # The duplicate terminal fact is acked and re-drives advancement idempotently.
+    push(socket, "job:finished", %{"exit_code" => 0}) |> assert_reply(:ok)
+    assert state("a") == :succeeded
+    assert state("b") == :queued
+    assert state("c") == :queued
+  end
+
   test "an unrelated branch keeps running when another branch fails" do
     {:ok, _pipeline} =
       Pipelines.create_pipeline(%{

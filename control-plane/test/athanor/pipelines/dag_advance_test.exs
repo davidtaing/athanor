@@ -123,6 +123,21 @@ defmodule Athanor.Pipelines.DagAdvanceTest do
     assert Ash.load!(pipeline, :status).status == :failed
   end
 
+  test "advancing the same terminal Job twice is idempotent" do
+    # A duplicate terminal fact may re-drive advancement (runner_channel). The
+    # second pass must read the same rows and no-op the already-done transitions.
+    pipeline = pipeline_with([{"a", []}, {"b", []}, {"c", ["a", "b"]}])
+
+    succeed(pipeline, "a")
+    succeed(pipeline, "b")
+    assert state(pipeline, "c") == :queued
+
+    # Re-advance the already-succeeded a: c is already queued, nothing regresses.
+    job(pipeline, "a") |> Pipelines.advance()
+    assert state(pipeline, "c") == :queued
+    assert state(pipeline, "a") == :succeeded
+  end
+
   test "a Pipeline with succeeded and skipped Jobs but no failure rolls up to succeeded" do
     pipeline = pipeline_with([{"a", []}, {"b", ["a"]}])
 

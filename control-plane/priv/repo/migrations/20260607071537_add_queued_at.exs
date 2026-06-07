@@ -11,6 +11,12 @@ defmodule Athanor.Repo.Migrations.AddQueuedAt do
     alter table(:jobs) do
       add :queued_at, :utc_datetime_usec
     end
+
+    # Backfill existing queued rows so they aren't left without a queued_at after
+    # the column is added; inserted_at is the best available approximation.
+    execute(
+      "UPDATE jobs SET queued_at = inserted_at WHERE state = 'queued' AND queued_at IS NULL"
+    )
   end
 
   def down do
