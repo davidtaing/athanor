@@ -3,7 +3,7 @@
 # `. bin/worktree-env`
 #
 #   athanor           -> main      PORT=4000    LIVE_DEBUGGER_PORT=4007
-#   athanor-wt<N>     -> wt<N>     PORT=4000+N  LIVE_DEBUGGER_PORT=4007+N
+#   athanor-wt<1-3>   -> wt<N>     PORT=4000+N  LIVE_DEBUGGER_PORT=4007+N
 #   anything else     -> sanitized dirname, ports hashed into 4100-4999
 #                        and 5100-5999 (covers agent-managed / nested
 #                        worktrees)
@@ -18,7 +18,7 @@ case "$_dir" in
     PORT=4000
     LIVE_DEBUGGER_PORT=4007
     ;;
-  athanor-wt[0-9] | athanor-wt[0-9][0-9])
+  athanor-wt[1-3])
     _n="${_dir##athanor-wt}"
     ATHANOR_WORKTREE="wt${_n}"
     PORT=$((4000 + _n))

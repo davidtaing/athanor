@@ -20,7 +20,7 @@ worked on — slots outlive branches.
 Sibling directories keep the main repo clean, but this layout does **not**
 rule out other worktrees — agent-managed worktrees (e.g. Claude Code's
 worktree isolation, which may nest under `.claude/` or a temp dir) coexist
-fine: any directory name that isn't `athanor`/`athanor-wt<N>` gets a
+fine: any directory name that isn't `athanor`/`athanor-wt<1-3>` gets a
 sanitized worktree name and a hashed port in 4100–4999 (see below).
 
 ## Per-worktree environment (implemented)
@@ -44,7 +44,7 @@ automatically via the root `.envrc` (direnv):
 | directory        | `ATHANOR_WORKTREE` | `PORT`              | `LIVE_DEBUGGER_PORT` |
 | ---------------- | ------------------ | ------------------- | -------------------- |
 | `athanor`        | `main`             | `4000`              | `4007`               |
-| `athanor-wt<N>`  | `wt<N>`            | `4000 + N`          | `4007 + N`           |
+| `athanor-wt<1-3>` | `wt<N>`           | `4000 + N`          | `4007 + N`           |
 | anything else    | sanitized dirname  | hash into 4100–4999 | hash into 5100–5999  |
 
 The fallback row is what keeps agent/nested worktrees collision-free without
