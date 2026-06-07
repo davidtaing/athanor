@@ -133,7 +133,16 @@ defmodule AthanorWeb.PipelineControllerTest do
 
       conn = create(conn, jobs)
       assert %{"errors" => errors} = json_response(conn, 422)
-      assert Enum.any?(errors, &(&1["message"] =~ "unknown"))
+
+      # The exact validation message, with no Ash internals (bread crumbs,
+      # action context) leaking to API clients.
+      assert [
+               %{
+                 "field" => "jobs",
+                 "message" =>
+                   "Job Dependencies must refer to Jobs in the same Pipeline; unknown: nonexistent"
+               }
+             ] = errors
     end
 
     test "dependency cycle", %{conn: conn} do
