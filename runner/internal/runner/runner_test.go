@@ -89,6 +89,10 @@ func (s *scriptedCP) handle(t *testing.T, ws *websocket.Conn) {
 			reply(f, "ok", map[string]any{})
 		case "job:started":
 			reply(f, "ok", map[string]any{})
+		case "log:chunk":
+			// Streamed Step (or clone) output: ack like the real CP so the
+			// streamer's Close drains and job:finished still lands last.
+			reply(f, "ok", map[string]any{})
 		case "job:finished":
 			s.finishedRaw = f.Payload
 			reply(f, "ok", map[string]any{})
@@ -129,7 +133,10 @@ func TestRunCloneFailureFailsJobWithoutRunningSteps(t *testing.T) {
 		t.Fatalf("exit code = %d, want nonzero for a failed clone", code)
 	}
 
-	wantOrder := []string{"phx_join", "job:ack", "job:started", "job:finished"}
+	// The clone's captured git output is streamed to the Job log exactly like a
+	// failing Step's output (under step_index 0, ahead of any Step), so a
+	// log:chunk precedes the (still-nonzero) job:finished.
+	wantOrder := []string{"phx_join", "job:ack", "job:started", "log:chunk", "job:finished"}
 	if strings.Join(cp.gotEvents, ",") != strings.Join(wantOrder, ",") {
 		t.Fatalf("event order = %v, want %v", cp.gotEvents, wantOrder)
 	}

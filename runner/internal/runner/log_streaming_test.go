@@ -3,11 +3,13 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/davidtaing/athanor/runner/internal/executor"
+	"github.com/davidtaing/athanor/runner/internal/workspace"
 	"github.com/gorilla/websocket"
 )
 
@@ -29,7 +31,11 @@ func (s *streamingCP) handle(t *testing.T, ws *websocket.Conn) {
 	reply := func(f v2Frame, status string, response any) {
 		respRaw, _ := json.Marshal(map[string]any{"status": status, "response": response})
 		out := v2Frame{JoinRef: f.JoinRef, Ref: f.Ref, Topic: f.Topic, Event: "phx_reply", Payload: respRaw}
-		_ = ws.WriteMessage(websocket.TextMessage, encodeFrame(t, out))
+		// Fail fast: a dropped reply silently starves the runner of acks, which
+		// would surface as an opaque timeout rather than the real cause.
+		if err := ws.WriteMessage(websocket.TextMessage, encodeFrame(t, out)); err != nil {
+			t.Errorf("write phx_reply (%s): %v", f.Event, err)
+		}
 	}
 
 	// join
@@ -49,7 +55,12 @@ func (s *streamingCP) handle(t *testing.T, ws *websocket.Conn) {
 		"log": map[string]any{"max_bytes": 8, "max_interval": 50},
 	})
 	out := v2Frame{JoinRef: join.JoinRef, Ref: nil, Topic: join.Topic, Event: "job:assign", Payload: pl}
-	_ = ws.WriteMessage(websocket.TextMessage, encodeFrame(t, out))
+	// Fail fast: if job:assign never reaches the runner the test would hang in
+	// awaitAssign and fail as an opaque timeout instead of pointing here.
+	if err := ws.WriteMessage(websocket.TextMessage, encodeFrame(t, out)); err != nil {
+		t.Errorf("write job:assign: %v", err)
+		return
+	}
 
 	for {
 		_, raw, err := ws.ReadMessage()
@@ -98,6 +109,16 @@ func TestStreamsStepOutputAsChunksBeforeFinished(t *testing.T) {
 	// Real shell runner so actual Step output flows through the streamer.
 	r := New(Config{URL: wsURL(srv.URL), RunnerID: "runner-1", BootToken: "boot-1"},
 		executor.NewShellRunner())
+	// Stub the clone (no network): this test exercises the log-streaming path, not
+	// the checkout (issue #7 has its own coverage). The stub creates the checkout
+	// dir the Step runs from (cmd.Dir must exist) and reports success so the Step
+	// runs and its output flows through the streamer.
+	r.clone = func(_ context.Context, spec workspace.Spec) workspace.Result {
+		if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
+			t.Fatalf("stub clone mkdir: %v", err)
+		}
+		return workspace.Result{}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

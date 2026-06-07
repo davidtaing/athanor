@@ -65,6 +65,12 @@ type Streamer struct {
 	// a flushing writer blocks (pipe backpressure) until an ack frees a permit —
 	// so the bound counts chunks awaiting ack, including the one being sent.
 	inflight chan struct{}
+	// cancel cancels cctx, the context the sender goroutine sends under and that
+	// enqueue's blocking sends select on. Close fires it when its own ctx is
+	// cancelled, so a permanently-stalled control plane can never leave an
+	// unkillable goroutine (or a wedged enqueue) behind after Close returns.
+	cctx   context.Context
+	cancel context.CancelFunc
 	// sendErr holds the first send failure; surfaced from Close.
 	sendErr error
 	errOnce sync.Once
@@ -84,11 +90,14 @@ func New(sender Sender, cfg Config) *Streamer {
 	if cfg.MaxBytes <= 0 {
 		cfg.MaxBytes = 64 * 1024
 	}
+	cctx, cancel := context.WithCancel(context.Background())
 	s := &Streamer{
 		sender:   sender,
 		cfg:      cfg,
 		queue:    make(chan Chunk, cfg.MaxUnacked),
 		inflight: make(chan struct{}, cfg.MaxUnacked),
+		cctx:     cctx,
+		cancel:   cancel,
 		done:     make(chan struct{}),
 	}
 	go s.run()
@@ -109,14 +118,33 @@ func (s *Streamer) StepWriter(stepIndex int) io.Writer {
 // Close flushes any buffered bytes, then blocks until every chunk has been
 // acked. Returns the first send error, if any. After Close the caller may send
 // job:finished (PRD: only after all chunks acked).
+//
+// On the normal path the ctx is unused and at-least-once semantics hold: every
+// buffered byte is flushed and every chunk is acked before Close returns. The
+// ctx is the escape hatch for a permanently-stalled control plane: cancelling it
+// unblocks the flush loop, any backpressured enqueue, and the sender's in-flight
+// SendChunk (via the sender's context), so Close returns ctx.Err() instead of
+// hanging — and crucially leaves no unkillable sender goroutine behind.
 func (s *Streamer) Close(ctx context.Context) error {
-	// Flush each Step writer's tail so no buffered bytes are stranded, then close
-	// the queue and wait for the sender goroutine to drain every in-flight chunk.
+	// If ctx is cancelled at any point, fire the sender's context too: that frees
+	// a backpressured enqueue and a stalled in-flight SendChunk so the sender
+	// goroutine can exit rather than leak.
+	defer s.cancel()
+
+	// Flush each Step writer's tail so no buffered bytes are stranded. Each Flush
+	// can block on backpressure (enqueue), so honor ctx between writers — a
+	// cancel makes enqueue return and lets us bail out of the flush loop.
 	s.mu.Lock()
 	writers := make([]*stepWriter, len(s.writers))
 	copy(writers, s.writers)
 	s.mu.Unlock()
 	for _, w := range writers {
+		select {
+		case <-ctx.Done():
+			s.cancel()
+			return ctx.Err()
+		default:
+		}
 		w.Flush()
 	}
 
@@ -124,6 +152,9 @@ func (s *Streamer) Close(ctx context.Context) error {
 	select {
 	case <-s.done:
 	case <-ctx.Done():
+		// Cancel the sender's context so a stalled SendChunk / blocked enqueue
+		// unwinds and the goroutine exits; then return without waiting on it.
+		s.cancel()
 		return ctx.Err()
 	}
 	return s.sendErr
@@ -132,22 +163,46 @@ func (s *Streamer) Close(ctx context.Context) error {
 // run is the single sender goroutine: it pulls flushed chunks in order and
 // sends each (blocking until ack). Pulling one frees a queue slot, which is what
 // releases a backpressured writer.
+//
+// Each SendChunk runs under s.cctx, which Close cancels when its own ctx fires.
+// So a permanently-stalled control plane no longer pins this goroutine: the
+// cancel makes the in-flight SendChunk return, and the cctx.Done() guard makes
+// any further iterations bail rather than block on a CP that will never ack.
 func (s *Streamer) run() {
 	defer close(s.done)
-	for c := range s.queue {
-		if err := s.sender.SendChunk(context.Background(), c); err != nil {
+	for {
+		// Pull the next chunk, but also wake on cctx so a cancelled Close (stalled
+		// CP) tears the goroutine down even when the queue was never closed (Close
+		// bails out of its flush loop before closing the queue on an early cancel).
+		var c Chunk
+		select {
+		case <-s.cctx.Done():
+			s.errOnce.Do(func() { s.sendErr = s.cctx.Err() })
+			return
+		case got, ok := <-s.queue:
+			if !ok {
+				return // queue closed and drained: normal-path completion.
+			}
+			c = got
+		}
+
+		if err := s.sender.SendChunk(s.cctx, c); err != nil {
 			s.errOnce.Do(func() { s.sendErr = err })
 			// Keep draining so writers don't deadlock; the error is surfaced
 			// from Close. (The runner treats a send error as fatal anyway.)
 		}
-		// Ack received: release the in-flight permit, freeing a backpressured
-		// writer (PRD: the connection returning releases the stall).
+		// Ack received (or send cancelled): release the in-flight permit, freeing a
+		// backpressured writer (PRD: the connection returning releases the stall).
 		<-s.inflight
 	}
 }
 
 // enqueue assigns the next seq and hands the chunk to the sender goroutine.
-// Blocks when the unacked buffer is full (backpressure).
+// Blocks when the unacked buffer is full (backpressure), but never
+// unconditionally: both blocking sends select on s.cctx so a cancelled Close
+// (stalled CP) unwinds a backpressured writer instead of pinning it forever. On
+// cancel the chunk is dropped — Close is already returning ctx.Err() and the
+// at-least-once guarantee only covers the non-cancelled path.
 func (s *Streamer) enqueue(stepIndex int, content []byte) {
 	s.mu.Lock()
 	s.nextSeq++
@@ -159,8 +214,19 @@ func (s *Streamer) enqueue(stepIndex int, content []byte) {
 	copy(buf, content)
 	// Acquire an in-flight permit first: this is the backpressure point — it
 	// blocks when MaxUnacked chunks are already awaiting their ack.
-	s.inflight <- struct{}{}
-	s.queue <- Chunk{Seq: seq, StepIndex: stepIndex, Content: buf}
+	select {
+	case s.inflight <- struct{}{}:
+	case <-s.cctx.Done():
+		return
+	}
+	select {
+	case s.queue <- Chunk{Seq: seq, StepIndex: stepIndex, Content: buf}:
+	case <-s.cctx.Done():
+		// Release the permit we just took so a draining run() does not block on a
+		// chunk that will never arrive.
+		<-s.inflight
+		return
+	}
 }
 
 // stepWriter accumulates one Step's output and flushes on the byte cap or the

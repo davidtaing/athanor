@@ -34,7 +34,7 @@ defmodule Athanor.Application do
     # when it is the configured backend (the test suite). The minio backend is
     # stateless — it holds no process (ADR 0004).
     children =
-      if Application.get_env(:athanor, :log_store) == Athanor.LogStore.InMemory do
+      if Athanor.LogStore.impl() == Athanor.LogStore.InMemory do
         children ++ [Athanor.LogStore.InMemory]
       else
         children
@@ -54,7 +54,7 @@ defmodule Athanor.Application do
   # Idempotent; best-effort — a transient minio blip at boot must not crash the
   # control plane, and the bucket is also created by the compose stack.
   defp ensure_log_bucket do
-    if Application.get_env(:athanor, :log_store) == Athanor.LogStore.Minio do
+    if Athanor.LogStore.impl() == Athanor.LogStore.Minio do
       try do
         Athanor.LogStore.Minio.ensure_bucket()
       rescue

@@ -168,6 +168,83 @@ func TestCloseWaitsForAllAcks(t *testing.T) {
 	}
 }
 
+// TestCloseHonorsCanceledCtx: against a permanently-stalled control plane (the
+// gate is never released, so no chunk is ever acked), a Close called with a
+// cancelled ctx returns that ctx's error promptly instead of hanging — and the
+// sender goroutine actually exits rather than leaking, because Close cancels the
+// sender's context, which unblocks the in-flight SendChunk.
+func TestCloseHonorsCanceledCtx(t *testing.T) {
+	gate := make(chan struct{}) // never closed: the CP never acks
+	snd := &fakeSender{gate: gate}
+	s := New(snd, Config{MaxBytes: 2, MaxInterval: time.Hour})
+
+	w := s.StepWriter(0)
+	_, _ = w.Write([]byte("aabb")) // two chunks, both stuck on the dead gate
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before Close even flushes
+
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close(ctx) }()
+
+	select {
+	case err := <-closed:
+		if err != ctx.Err() {
+			t.Fatalf("Close error = %v, want %v", err, ctx.Err())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close hung on a stalled control plane despite a cancelled ctx")
+	}
+
+	// The sender goroutine must have exited (done closed): a cancelled Close that
+	// leaves an unkillable goroutine is exactly the leak this guards against.
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sender goroutine did not exit after a cancelled Close")
+	}
+}
+
+// TestCloseCancelMidFlightUnblocks: with chunks already in flight and Close
+// blocked waiting on acks that never come, cancelling Close's ctx mid-wait makes
+// it return ctx.Err() and tears the goroutine down — the cancellation reaches a
+// SendChunk that was already blocked when Close was called.
+func TestCloseCancelMidFlightUnblocks(t *testing.T) {
+	gate := make(chan struct{}) // never released
+	snd := &fakeSender{gate: gate}
+	s := New(snd, Config{MaxBytes: 2, MaxInterval: time.Hour})
+
+	w := s.StepWriter(0)
+	_, _ = w.Write([]byte("aabb"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close(ctx) }()
+
+	// Let Close get past the flush and block on the un-acked drain.
+	select {
+	case <-closed:
+		t.Fatal("Close returned before its ctx was cancelled")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-closed:
+		if err != ctx.Err() {
+			t.Fatalf("Close error = %v, want %v", err, ctx.Err())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not unblock after its ctx was cancelled")
+	}
+
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sender goroutine did not exit after a mid-flight cancel")
+	}
+}
+
 // TestBoundedBufferBlocksWriter: once the unacked buffer is full, a further
 // Write blocks (pipe backpressure) rather than dropping output — nothing is
 // ever silently dropped (PRD).
