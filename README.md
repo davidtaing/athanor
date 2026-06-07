@@ -34,6 +34,82 @@ curl -H "Authorization: Bearer local-dev-token" http://localhost:4000/api/health
 curl -i http://localhost:4000/api/health
 ```
 
+### Create a Pipeline
+
+A Pipeline is submitted with its full Definition: a git URL + ref and a list
+of named Jobs (container image, ordered Steps, optional `needs` Dependencies,
+`env`, `timeout`). See `CONTEXT.md` for the terms.
+
+```sh
+# 201 Created
+curl -X POST http://localhost:4000/api/pipelines \
+  -H "Authorization: Bearer local-dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "git_url": "https://github.com/davidtaing/athanor",
+    "git_ref": "main",
+    "jobs": [
+      {
+        "name": "test",
+        "image": "elixir:1.20",
+        "steps": [{"command": "mix test"}]
+      },
+      {
+        "name": "lint",
+        "image": "elixir:1.20",
+        "steps": [{"name": "credo", "command": "mix credo --strict"}],
+        "needs": ["test"]
+      }
+    ]
+  }'
+```
+
+Dependency-free Jobs are born `queued`; Jobs with `needs` are born `waiting`.
+The Pipeline's `status` is derived from its Jobs' states at read time and is
+never stored:
+
+```json
+{
+  "data": {
+    "id": "8c6f1f3e-…",
+    "git_url": "https://github.com/davidtaing/athanor",
+    "git_ref": "main",
+    "status": "pending",
+    "jobs": [
+      {"id": "…", "name": "test", "state": "queued",  "needs": [], "…": "…"},
+      {"id": "…", "name": "lint", "state": "waiting", "needs": ["test"], "…": "…"}
+    ],
+    "created_at": "…",
+    "updated_at": "…"
+  }
+}
+```
+
+A Definition is validated before anything is written — missing names or
+images, duplicate names, Dependencies on unknown Jobs, and Dependency cycles
+are all rejected:
+
+```sh
+# 422 Unprocessable Entity ("lint" is not a Job in this Pipeline)
+curl -X POST http://localhost:4000/api/pipelines \
+  -H "Authorization: Bearer local-dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{"git_url": "https://github.com/foo/bar", "git_ref": "main",
+       "jobs": [{"name": "test", "image": "elixir:1.20", "needs": ["lint"]}]}'
+# => {"errors":[{"field":"jobs","message":"Job Dependencies must refer to Jobs in the same Pipeline; unknown: lint"}]}
+```
+
+### Fetch a Pipeline or Job
+
+```sh
+curl -H "Authorization: Bearer local-dev-token" \
+  http://localhost:4000/api/pipelines/<pipeline-id>
+
+curl -H "Authorization: Bearer local-dev-token" \
+  http://localhost:4000/api/jobs/<job-id>
+# 404 {"error":"not_found"} for unknown ids
+```
+
 ### Configuration
 
 The control-plane service reads these environment variables (compose sets sane
