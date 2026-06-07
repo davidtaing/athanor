@@ -1,1 +1,4 @@
 athanor-runner
+
+# `go build ./...` from the module root emits a binary named after the dir.
+/runner
