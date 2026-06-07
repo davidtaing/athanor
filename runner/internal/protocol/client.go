@@ -198,6 +198,16 @@ func (c *Client) request(ctx context.Context, ref, event string, payload json.Ra
 		c.mu.Unlock()
 		return replyResult{}, ctx.Err()
 	case <-c.readDone:
+		// The reply and the close can both be ready when the server replies and
+		// immediately drops the connection (a select over two ready channels picks
+		// pseudo-randomly). readDone closes only after the readLoop — the sole
+		// dispatcher — has returned, so if the reply made it, it is already
+		// buffered in ch: drain it before declaring the connection dead.
+		select {
+		case res := <-ch:
+			return res, nil
+		default:
+		}
 		return replyResult{}, fmt.Errorf("connection closed awaiting reply to %s", event)
 	}
 }
@@ -266,10 +276,11 @@ func (c *Client) dispatch(raw []byte) {
 	select {
 	case c.pushes <- Push{Event: event, Payload: payload}:
 	default:
-		// Buffer (cap 16) is full: the consumer is not draining fast enough.
-		// We drop the push rather than block the readLoop. Logging the drop
-		// makes it visible; backpressure/blocking is deferred to issue #8,
-		// once push volume (log:chunk) is real.
+		// Buffer (cap 16) is full: the consumer is not draining fast enough. We
+		// drop the push rather than block the readLoop. This path carries only
+		// CP→Runner server pushes (job:assign, job:cancel) — low volume; log:chunk
+		// is a client push with a reply and never flows here, so the high-volume
+		// log path has its own bounded-buffer backpressure (internal/logstream).
 		log.Printf("protocol: dropped server push, buffer full (event=%s topic=%s)", event, c.Topic())
 	}
 }

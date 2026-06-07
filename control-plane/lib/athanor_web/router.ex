@@ -42,6 +42,7 @@ defmodule AthanorWeb.Router do
     post "/pipelines", PipelineController, :create
     get "/pipelines/:id", PipelineController, :show
     get "/jobs/:id", JobController, :show
+    get "/jobs/:id/logs", LogController, :show
   end
 
   scope "/", AthanorWeb do

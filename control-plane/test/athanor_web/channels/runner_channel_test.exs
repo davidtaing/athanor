@@ -5,7 +5,9 @@ defmodule AthanorWeb.RunnerChannelTest do
   fake Provisioner, then drives a Job through the v1 core protocol. No
   containers, no Go.
   """
-  use AthanorWeb.ChannelCase, async: true
+  # async: false — the log:chunk / seal tests use the singleton InMemory
+  # LogStore (its failing flag in particular cannot be toggled concurrently).
+  use AthanorWeb.ChannelCase, async: false
 
   alias Athanor.Pipelines
   alias Athanor.Provisioner.Recorder
@@ -250,6 +252,154 @@ defmodule AthanorWeb.RunnerChannelTest do
       reloaded = Ash.get!(Athanor.Pipelines.Job, job.id)
       assert reloaded.state == :running
       assert DateTime.compare(reloaded.updated_at, before) == :gt
+    end
+  end
+
+  describe "log:chunk" do
+    setup %{runner: runner} do
+      Athanor.LogStore.InMemory.reset()
+      {:ok, _reply, socket} = connect_and_join(runner, %{"boot_token" => runner.boot_token})
+      {:ok, socket: socket}
+    end
+
+    test "a chunk is acked only after LogStore handoff and is persisted", %{
+      socket: socket,
+      job: job
+    } do
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "hello"})
+      |> assert_reply(:ok)
+
+      assert Athanor.LogStore.InMemory.list_chunks(job.id) == [{1, "hello"}]
+    end
+
+    test "an out-of-contract seq is still accepted and acked (liberal receiver)", %{
+      socket: socket,
+      job: job
+    } do
+      # No seq 1 first: the streaming hot path validates nothing. Contiguity is a
+      # seal-time concern only (PRD #35).
+      push(socket, "log:chunk", %{"seq" => 7, "step_index" => 0, "content" => "gap"})
+      |> assert_reply(:ok)
+
+      assert Athanor.LogStore.InMemory.list_chunks(job.id) == [{7, "gap"}]
+    end
+
+    test "resending the same seq dedups to one object (chunk-name-as-seq)", %{
+      socket: socket,
+      job: job
+    } do
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "once"})
+      |> assert_reply(:ok)
+
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "once"})
+      |> assert_reply(:ok)
+
+      assert Athanor.LogStore.InMemory.list_chunks(job.id) == [{1, "once"}]
+    end
+
+    test "a chunk is broadcast for live tail before it is persisted", %{
+      socket: socket,
+      job: job
+    } do
+      :ok = Athanor.Logs.subscribe(job.id)
+
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "live"})
+      |> assert_reply(:ok)
+
+      assert_receive {:log_chunk, job_id, 1, 0, "live"}
+      assert job_id == job.id
+    end
+
+    test "a LogStore write failure withholds the ack (stall, never drop, never fail)", %{
+      socket: socket
+    } do
+      Athanor.LogStore.InMemory.set_failing(true)
+      on_exit(fn -> Athanor.LogStore.InMemory.set_failing(false) end)
+
+      ref = push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "stalled"})
+      # The Channel withholds its ack while the store is down — no :ok reply.
+      refute_reply ref, :ok, 100
+    end
+
+    test "a malformed log:chunk is rejected gracefully and does not crash the Channel", %{
+      socket: socket,
+      job: job
+    } do
+      # Missing seq and a non-integer seq both miss the strict handle_in clause and
+      # land on the fallback (runner_channel.ex), which replies invalid_payload
+      # without touching the LogStore.
+      push(socket, "log:chunk", %{"step_index" => 0, "content" => "no seq"})
+      |> assert_reply(:error, %{reason: "invalid_payload"})
+
+      push(socket, "log:chunk", %{"seq" => "1", "step_index" => 0, "content" => "string seq"})
+      |> assert_reply(:error, %{reason: "invalid_payload"})
+
+      # Nothing was persisted, and the Channel is still alive — a well-formed chunk
+      # on the same socket still acks.
+      assert Athanor.LogStore.InMemory.list_chunks(job.id) == []
+
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "ok"})
+      |> assert_reply(:ok)
+
+      assert Athanor.LogStore.InMemory.list_chunks(job.id) == [{1, "ok"}]
+    end
+  end
+
+  # No pre-join setup here: this describe joins itself so it can arm the
+  # after_join gate before the assign runs.
+  describe "log:chunk before job:assign" do
+    test "a chunk arriving before job_id is stamped is rejected gracefully, not a crash",
+         %{runner: runner} do
+      Athanor.LogStore.InMemory.reset()
+
+      # Arm the after_join gate so the assign is deferred (job_id left unstamped)
+      # without blocking the Channel loop. The Channel sends {:after_join_deferred,
+      # pid, runner}; we drive a chunk into that window, then send :do_assign to
+      # complete the real assign.
+      Application.put_env(:athanor, :runner_channel_after_join_gate, {runner.id, self()})
+      on_exit(fn -> Application.delete_env(:athanor, :runner_channel_after_join_gate) end)
+
+      {:ok, _reply, socket} = connect_and_join(runner, %{"boot_token" => runner.boot_token})
+
+      assert_receive {:after_join_deferred, channel_pid, channel_runner}, 1_000
+
+      # A chunk that races ahead of the assign must reply gracefully, not crash.
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "early"})
+      |> assert_reply(:error, %{reason: "try_again"})
+
+      # The Channel survived the early chunk: completing the deferred assign and
+      # acking a well-formed chunk below prove it without a racy liveness probe.
+      send(channel_pid, {:do_assign, channel_runner})
+      assert_push "job:assign", _payload
+
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "ok"})
+      |> assert_reply(:ok)
+    end
+  end
+
+  describe "seal on terminal state" do
+    setup %{runner: runner} do
+      Athanor.LogStore.InMemory.reset()
+      {:ok, _reply, socket} = connect_and_join(runner, %{"boot_token" => runner.boot_token})
+      {:ok, socket: socket}
+    end
+
+    test "the log is sealed when the Job goes terminal and chunk objects are removed", %{
+      socket: socket,
+      job: job
+    } do
+      push(socket, "job:started", %{}) |> assert_reply(:ok)
+
+      push(socket, "log:chunk", %{"seq" => 1, "step_index" => 0, "content" => "one\n"})
+      |> assert_reply(:ok)
+
+      push(socket, "log:chunk", %{"seq" => 2, "step_index" => 0, "content" => "two\n"})
+      |> assert_reply(:ok)
+
+      push(socket, "job:finished", %{"exit_code" => 0}) |> assert_reply(:ok)
+
+      assert {:ok, "one\ntwo\n"} = Athanor.Logs.fetch(job.id)
+      assert Athanor.LogStore.InMemory.list_chunks(job.id) == []
     end
   end
 end

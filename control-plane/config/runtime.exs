@@ -23,6 +23,56 @@ end
 config :athanor, AthanorWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# LogStore backend (ADR 0004). The test suite overrides this to the in-memory
+# store (config/test.exs); every running environment uses minio/S3.
+#
+# In dev the defaults match the docker-compose minio (the `minioadmin` dev
+# credentials), so a fresh checkout works with no env setup. In prod the
+# credentials and endpoint are required — there is no safe default for a real
+# object store, so a missing var must fail loudly rather than silently fall
+# back to the well-known `minioadmin` dev secret.
+case config_env() do
+  :dev ->
+    config :athanor, :log_store, Athanor.LogStore.Minio
+
+    config :athanor, Athanor.LogStore.Minio,
+      endpoint_url: System.get_env("MINIO_ENDPOINT", "http://localhost:9000"),
+      access_key_id: System.get_env("MINIO_ACCESS_KEY", "minioadmin"),
+      secret_access_key: System.get_env("MINIO_SECRET_KEY", "minioadmin"),
+      bucket: System.get_env("MINIO_BUCKET", "athanor-logs"),
+      region: System.get_env("AWS_REGION", "us-east-1")
+
+  :prod ->
+    config :athanor, :log_store, Athanor.LogStore.Minio
+
+    # Reject blank as well as missing: System.fetch_env! accepts a set-but-empty
+    # var (""), which would silently configure an unusable object store. There is
+    # no safe default for a real store, so a blank (incl. whitespace-only) value
+    # must fail loudly here.
+    require_minio_env! = fn name ->
+      value = System.get_env(name)
+
+      if is_binary(value) and String.trim(value) != "" do
+        value
+      else
+        raise "environment variable #{name} is missing or blank. " <>
+                "It is required (non-blank) in prod to configure the object store (ADR 0004)."
+      end
+    end
+
+    config :athanor, Athanor.LogStore.Minio,
+      endpoint_url: require_minio_env!.("MINIO_ENDPOINT"),
+      access_key_id: require_minio_env!.("MINIO_ACCESS_KEY"),
+      secret_access_key: require_minio_env!.("MINIO_SECRET_KEY"),
+      bucket: require_minio_env!.("MINIO_BUCKET"),
+      region: System.get_env("AWS_REGION", "us-east-1")
+
+  :test ->
+    # The test suite uses Athanor.LogStore.InMemory (config/test.exs); no
+    # object-store config is needed here.
+    :ok
+end
+
 # MVP static bearer token. Read from the environment in every environment so
 # the docker-compose stack can inject it; required (non-empty) in prod.
 api_token = System.get_env("ATHANOR_API_TOKEN")

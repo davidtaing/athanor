@@ -1,7 +1,9 @@
 # Docker-backed tests boot real containers against the local daemon, so they are
 # excluded from the default fast suite (and from CI, which has no daemon). Run
 # them explicitly: `mix test --include docker` / `--include e2e`.
-ExUnit.start(exclude: [:docker, :e2e])
+# `:minio` tags hit a real minio (the docker-compose athanor-minio service), so
+# they are excluded from the default fast suite. Run: `mix test --include minio`.
+ExUnit.start(exclude: [:docker, :e2e, :minio])
 Ecto.Adapters.SQL.Sandbox.mode(Athanor.Repo, :manual)
 
 # Create the Provisioner.Recorder registry table here so it is owned by the

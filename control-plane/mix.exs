@@ -79,6 +79,9 @@ defmodule Athanor.MixProject do
        depth: 1},
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
+      # S3-compatible object storage for Job logs (minio/S3, ADR 0004). req_s3
+      # is a Req plugin: SigV4 signing with a custom endpoint for minio.
+      {:req_s3, "~> 0.2"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},

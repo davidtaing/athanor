@@ -128,6 +128,12 @@ defmodule AthanorWeb.E2ESmokeTest do
 
     assert eventually_state(job_id) == :succeeded
     assert no_managed_containers?(), "runner container was not destroyed after success"
+
+    # The full log path ran for real: the container streamed log:chunk over its
+    # Channel, the control plane persisted and sealed them, and the sealed log is
+    # fetchable and contains the Step's output (issue #8, ADR 0004).
+    assert {:ok, log} = Athanor.Logs.fetch(job_id)
+    assert log =~ "built"
   end
 
   test "a Pipeline pointing at an unknown ref fails the Job and the container is destroyed", %{
