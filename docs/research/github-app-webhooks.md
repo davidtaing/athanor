@@ -173,7 +173,7 @@ recovery role instead.
 
 ## 3. Reachability (decided constraint: the homelab takes no public ingress)
 
-The governing decision, made 2026-06-08: **the homelab will not be exposed to
+The governing decision, made June 2026: **the homelab will not be exposed to
 the internet in any form.** That rules out not just port-forwarding but also
 the outbound-initiated tunnels that are the standard self-hoster answer —
 Cloudflare Tunnel and Tailscale Funnel open no inbound ports, but they publish
@@ -405,11 +405,11 @@ independent. **Do not design the YAML here.**
   *(unverified)* to the exact second; design for "respond fast, well under
   ~10 s".
 - **smee.io 2026 operational status/limits**: not surfaced by search — *(unverified)*.
+  Plan assumes it remains the standard GitHub-App dev relay; confirm it's live
+  when the webhook-handler slice starts.
 - **Firecracker performance under EC2 nested KVM**: the Feb 2026 nested-virt
   launch is verified, but no published Firecracker-under-nested-KVM benchmarks
   were found — *(unverified)*; measure before committing to an AWS endgame.
-  Plan assumes it remains the standard GitHub-App dev relay; confirm it's live
-  when the webhook-handler slice starts.
 - **Tailscale Funnel "max 3 funnels per tailnet"**: commonly cited, not
   confirmed against current Tailscale docs in this pass — *(unverified)*.
 - **GitHub App rate limit "scales with repos and org users"**: directionally
