@@ -70,7 +70,12 @@ defmodule Athanor.Provisioner.Recorder do
     if Process.alive?(recorder), do: recorder
   end
 
-  defp ensure_table do
+  @doc """
+  Create the registry table if it does not exist, returning the table name.
+  Called once from `test_helper.exs` so the table is owned by the long-lived
+  test-runner process and survives every individual test's lifecycle.
+  """
+  def ensure_table do
     case :ets.whereis(@table) do
       :undefined ->
         :ets.new(@table, [:named_table, :public, :set, {:read_concurrency, true}])

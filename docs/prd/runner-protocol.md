@@ -202,6 +202,7 @@ topic scheme survives a framing change.
 
 | Value | Default | Measured from |
 |---|---|---|
+| Max concurrent runners | 5 | derived each tick from `count(state IN (assigned, running))`; the Scheduler dispatches `cap − count` from the queue head |
 | Boot timeout | conservative (e.g. 60 s) | Provisioner boot call → first join |
 | Max boot attempts | 3 | per Provisioner boot call for the Job; exhaustion ⇒ failed (`boot_failure`) |
 | Grace period | conservative (e.g. 30 s) | channel-process termination |
