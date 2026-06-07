@@ -34,6 +34,14 @@ Two of three is not enough. The existing ADRs all clear the bar:
 - **Naming conventions** (Runner not worker, Pipeline/Job/Step) — not
   decisions about structure; they live in `CONTEXT.md` as glossary entries.
 
+A decision can harden. If circumstances change so a previously reversible
+choice now clears all three criteria — e.g. the API surface grows until
+swapping the JSON layer is a real migration — promote it to an ADR at that
+point, carrying the original rationale over from wherever it was first
+recorded. Until then, the rationale is no less searchable for living in
+`CLAUDE.md` or the glossary; the routing decides *where* a decision is
+recorded, never *whether*.
+
 ## Where non-ADR decisions go
 
 | Kind of decision | Home |
