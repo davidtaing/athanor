@@ -17,6 +17,8 @@ defmodule AthanorWeb.E2ESmokeTest do
   """
   use AthanorWeb.ConnCase, async: false
 
+  require Logger
+
   @moduletag :e2e
   @moduletag :docker
   # Booting a container, joining, running echo steps, reporting, and destroying
@@ -180,7 +182,17 @@ defmodule AthanorWeb.E2ESmokeTest do
 
   defp cleanup_managed_containers do
     for id <- managed_container_ids() do
-      Req.delete(docker_req(url: "/containers/#{id}", params: [force: true]))
+      case Req.delete(docker_req(url: "/containers/#{id}", params: [force: true])) do
+        {:ok, %{status: status}} when status in [204, 200, 404] ->
+          :ok
+
+        # Don't silently swallow teardown failures: a container that won't delete
+        # will leak and poison later runs, so surface it loudly.
+        other ->
+          Logger.error(
+            "e2e cleanup failed to force-delete managed container #{id}: #{inspect(other)}"
+          )
+      end
     end
   end
 
