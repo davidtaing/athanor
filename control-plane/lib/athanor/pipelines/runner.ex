@@ -104,6 +104,10 @@ defmodule Athanor.Pipelines.Runner do
 
   identities do
     identity :unique_boot_token, [:boot_token]
+
+    # One Runner per Job, enforced at the data layer (ADR 0003: one Runner
+    # executes exactly one Job).
+    identity :unique_job, [:job_id]
   end
 
   @doc false

@@ -20,6 +20,16 @@ defmodule Athanor.Pipelines.Job do
   postgres do
     table "jobs"
     repo Athanor.Repo
+
+    # The Failure Reason is data on the single Failed state (`CONTEXT.md`); the
+    # DB only ever stores NULL or one of the four canonical tokens, regardless
+    # of which writer touches the row.
+    check_constraints do
+      check_constraint :failure_reason,
+        name: "jobs_failure_reason_check",
+        check:
+          "failure_reason IS NULL OR failure_reason IN ('nonzero_exit', 'timeout', 'runner_lost', 'boot_failure')"
+    end
   end
 
   state_machine do
