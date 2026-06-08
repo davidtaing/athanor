@@ -1,8 +1,10 @@
 # Research: secrets management for ephemeral, one-job Runners
 
-**Status:** research report — input to a future grilling session, not a decision,
-not an implementation.
-**Date:** 2026-06-08
+**Status:** research report — input to a grilling session. A first grill happened
+**2026-06-08**; its leanings are recorded in **§ Grill outcomes** at the end.
+These are working decisions for when secrets get sliced, **not** ratified ADRs
+and **not** an implementation — the MVP cut-line (no secrets) still stands.
+**Date:** 2026-06-08 (research); grill appended 2026-06-08
 **Issue:** #59.
 **Frame:** the MVP has **no secrets** (cut-line, `CLAUDE.md`). This is a named
 post-MVP exploration target. The report surveys how real CI systems deliver
@@ -477,6 +479,68 @@ auth doc drew for tokens, applied to secrets.
 4. *(Secondary)* **Is envelope-encryption-in-Postgres the right stopping point,
    or is standing up OpenBao to learn dynamic secrets the more valuable
    learning slice** — accepting it's disproportionate as *infrastructure*?
+
+---
+
+## Grill outcomes (2026-06-08 session)
+
+A first grilling pass over the four open questions above. These are **leanings**
+to carry into the eventual post-MVP secrets slice — working decisions, not
+ratified ADRs. The cut-line (no secrets, public repos only) is unchanged; nothing
+here is built. The framing that drove the whole session: *"protect secrets in the
+Runner" is largely the wrong goal* — ADR 0003 makes the Step root over any
+plaintext in the container, so every choice below is downstream of the real
+control, which is **scope**.
+
+1. **Trust boundary (Q1) — scope is the only real control, and the first
+   decision is a product one.** Because masking and crypto don't hold against
+   malicious Step code, the load-bearing rule is *which Job gets which secret*.
+   Every mature system converged here (GitHub fork rule, Woodpecker trusted-repo
+   gating). Athanor's public-repo analogue: **untrusted Definitions get no
+   secrets, full stop** — a secret is bound to a Pipeline and reaches a Runner
+   only for trusted (owner-authored) Definitions, never an arbitrary public-PR
+   author. **This belongs in the PRD, not an ADR** — it's a trust/product call,
+   not an engineering one.
+
+2. **Delivery (Q2) — Option A (push over the existing Channel) for static
+   secrets.** Zero new auth surface; the control plane is the only decryptor.
+   Option B (Runner-pull on the Session Token) is deferred until there's a
+   *consumer* for dynamic/JIT secrets — until then it only spends the Session
+   Token's "never Step-reachable" budget for no gain. **Discipline that comes
+   with Option A:** the secret must ride a **distinct, non-logged field**, never
+   folded into the loggable `env` map on `job:assign`, and never persisted with
+   the dispatch record.
+
+3. **Masking (Q3) — mask at source on the Runner, and say plainly it's
+   accident-prevention only.** ADR 0004 makes leaks *durable* in minio, so
+   masking must happen **before bytes enter `log:chunk`** (CP-side masking lets
+   plaintext cross the wire and race the PubSub broadcast). State the limit in
+   the spec without overselling: base64 / split-across-lines / suffix defeat it
+   trivially — it guards against accidental echo, never a malicious Step.
+
+4. **Storage (Q4) — Cloak-style envelope encryption in Postgres, KEK from the
+   environment. No Vault/OpenBao now.** Proportionate for single-host /
+   single-operator; keeps ADR 0002 intact (the *ciphertext* is the truth) and
+   teaches envelope encryption without a second stateful system. **Accepted
+   boundary, named honestly:** this defends a stolen DB dump (the dominant real
+   leak path) but **not** a live control-plane compromise (the BEAM holds the
+   KEK). OpenBao stays the named exploration for when *dynamic secrets* are the
+   actual learning goal — a paragraph in a future ADR, not adoption.
+
+**Pulled forward — pre-secrets hardening (sliceable now, issue #82).** The
+cheapest win wants doing *before* secrets exist and is a latent bug today:
+**explicitly construct the Step subprocess environment** instead of inheriting
+it. As built, `cmd.Env` is unset so Steps inherit the Runner's bootstrap vars
+(`ATHANOR_BOOT_TOKEN` leaks), and the declared `env` map is received but never
+applied. One change closes both, makes `env` work, and establishes the invariant
+(now recorded in `runner-protocol.md`) that **file-over-env-on-tmpfs** secret
+delivery later builds on — write the value to a tmpfs file, set the env var to
+the *path*, get zeroization for free when the ephemeral Runner dies (ADR 0003).
+
+**Still open / not grilled:** whether to ever climb to dynamic/JIT secrets (the
+trigger for Option B + OpenBao); the exact `cmd.Env` base set Steps legitimately
+need; redaction-at-seal-time as a masking backstop. Revisit when a secrets
+consumer actually exists.
 
 ---
 
