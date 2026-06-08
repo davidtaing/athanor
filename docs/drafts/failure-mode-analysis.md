@@ -93,6 +93,7 @@ Not every prompt applies to every step; run through all of them and keep the
 ones that bite.
 
 ### A. A component doing local work (a process, a step, a side effect)
+
 - **Crashes before the side effect commits** — work lost, nothing recorded.
 - **Crashes after the side effect commits but before reporting it** — work done,
   but no one knows (the classic "did it happen?" gap).
@@ -103,6 +104,7 @@ ones that bite.
 - **Produces a wrong/garbage result** — succeeds loudly but with bad output.
 
 ### B. A message between two components (the distributed core)
+
 For every arrow in your happy path, the message can be:
 - **Lost** — sent, never arrives. Sender thinks it's done; receiver never acts.
 - **Delayed** — arrives, but *after* a timeout already fired and the system
@@ -113,6 +115,7 @@ For every arrow in your happy path, the message can be:
   / never knew about this work. (`job:finished` for an already-failed Job.)
 
 ### C. The connection itself (persistent WebSocket, ADR 0001)
+
 - **Drops mid-flow** — is the peer dead, or blipped? (You can't tell — §1.)
 - **Drops and reconnects within the grace window** — harmless if you designed
   for it; catastrophic if you assumed the drop meant death.
@@ -120,6 +123,7 @@ For every arrow in your happy path, the message can be:
   resync, or get orphaned / double-executed?
 
 ### D. Time and deadlines
+
 - **A timeout fires but the work was actually fine** (false positive) — you just
   killed healthy work. How expensive is that?
 - **Which clock anchors the deadline?** A deadline measured from the wrong
@@ -129,6 +133,7 @@ For every arrow in your happy path, the message can be:
   Is that slack acceptable here?
 
 ### E. Shared state and concurrency
+
 - **Two actors act on the same row concurrently** — the cancel that lands as the
   Job is finishing; two scheduler passes dispatching the same Job.
 - **Read-modify-write interleaving** — you read state, decide, write — but it
@@ -136,6 +141,7 @@ For every arrow in your happy path, the message can be:
 - **Stale read** — you acted on state that was already out of date.
 
 ### F. Cross-cutting (sweep these against the whole flow, once)
+
 - **Control-plane restart mid-flow** — every in-memory process dies. Can the
   state be reconstructed from Postgres alone? (ADR 0002: the DB is the source of
   truth; processes coordinate but never *own* state — so a restart must lose
@@ -217,7 +223,7 @@ collapses "lost message" and "duplicated message" into one tolerated case.
 
 One table per happy-path step. Fill it as you go.
 
-```
+```text
 Happy-path step: <N. actor does Y, side effect Z>
 
 | # | Failure mode (from §4) | Likelihood/impact | Disposition | Intended behaviour | Enforced where | Test |
