@@ -54,6 +54,10 @@ Default to Elixir; Go is for the runner only.
 - `docs/specs/runner-protocol.md` — the Elixir↔Go runner protocol wire
   contract (registration, job dispatch, credentials; log streaming and
   rejoin specified, not yet built).
+- `docs/provisioning-engine.md` — forward-looking sketch (not built) of the
+  Runner-provisioning seam (a `Backend` behaviour + `Spec`) so Firecracker
+  slots in cleanly and the core can be reused by two planned sibling
+  projects (agent sandbox, mini-Fly).
 
 ## Decided (see docs/adr/)
 
