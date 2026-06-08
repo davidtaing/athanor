@@ -313,7 +313,7 @@ The mapping is mechanical:
 
 This closes TDD's real blind spot. TDD gives you the *rhythm* — red → green →
 refactor, test-first — but it never tells you *which* tests to write. Left to
-instinct, suites skew happy-path-heavy, because people don't enumerate failures
+instinct, suites skew happy-path-heavy because people don't enumerate failures
 (the §10 trap again). FMA front-loads failure-mode breadth *before* a line of
 test code, so the suite comes out balanced.
 
