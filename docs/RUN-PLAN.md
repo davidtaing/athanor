@@ -6,8 +6,11 @@ This file is a prompt. Launch it with:
 claude "Read docs/RUN-PLAN.md and execute it."
 ```
 
-Updated 2026-06-07 after the control-plane design session: status table,
-merge gate (branch protection), design addenda in issue comments.
+Updated 2026-06-08: the spine and first fan-out (#4–#9, #7, #8) are merged;
+only failure handling (#10) and cancellation (#11 → split #55/#56) remain, and
+they run **sequentially, not as a parallel fan-out** (shared cancel-drain /
+force-destroy machinery). #10 is hand-run, not fire-and-forget — see below.
+(Prior: 2026-06-07 control-plane design session — merge gate, design addenda.)
 
 ---
 
@@ -39,29 +42,34 @@ move on. You do not implement issues yourself.
    green, human notified." Before starting an issue, verify its blockers'
    PRs are *merged* (issue closed), not just opened.
 
-## The DAG — status as of 2026-06-07
+## The DAG — status as of 2026-06-08
 
 | Issue | Slice | Blocked by | Status |
 |---|---|---|---|
 | #2 | Walking skeleton: compose stack + health endpoint | — | ✅ merged |
 | #3 | Create & fetch Pipelines | #2 | ✅ merged (PR #17) |
 | #25 | Go scaffold (`runner/` + go CI job) | — | ✅ merged (PR #29) |
-| #4 | Runner protocol v1 over Channels (fake runner) | #3 | **next up** |
-| #9 | DAG scheduling + scheduler mechanics | #4 | ready after #4 |
-| #5 | Go runner walking skeleton | #4 | ready after #4 (builds on #25's scaffold) |
-| #6 | Docker Provisioner — tracer bullet | #4, #5 | |
-| #7 | Git clone in the runner | #6 | fan-out |
-| #8 | Logs: stream, minio, seal, live tail | #6 | fan-out |
-| #10 | Failure handling | #6 | fan-out |
-| #11 | Cancellation | #6 | fan-out |
+| #4 | Runner protocol v1 over Channels (fake runner) | #3 | ✅ merged |
+| #35 | Protocol v1 amendments (PRD: job:ack, Step objects, …) | #4 | ✅ landed in #4 reconciliation (closed) |
+| #9 | DAG scheduling + scheduler mechanics | #4 | ✅ merged |
+| #5 | Go runner walking skeleton | #4 | ✅ merged |
+| #6 | Docker Provisioner — tracer bullet | #4, #5 | ✅ merged |
+| #7 | Git clone in the runner | #6 | ✅ merged |
+| #8 | Logs: stream, minio, seal, live tail | #6 | ✅ merged (PR #45) |
+| #10 | Failure handling | #6 | ⏳ **next up** — hand-run (FMA slice) |
+| #11 | Cancellation (tracking parent) | #6 | split → #55, #56 |
+| #55 | Cancellation 1/2: control-plane cancel | #6 | ⏳ after #10 |
+| #56 | Cancellation 2/2: runner cancel compliance | #55 | ⏳ after #55 |
 
-Execution order: the spine **#4 → #5 → #6 is strictly sequential** —
-these create the conventions (protocol code, test seams) everything else
-inherits. **#9 may run in parallel with #5** (Elixir scheduling vs Go
-runner — disjoint code) in an isolated worktree. After #6, the fan-out
-**#7, #8, #10, #11** may run as parallel subagents in isolated worktrees
-(`isolation: "worktree"`). Optional fillers at any point, lowest priority:
-#15 (theme script refactor), #16 (User timestamps).
+Execution order: the spine #4 → #5 → #6 and the first fan-out (#7, #8, #9) are
+**done and merged**. What remains runs **strictly sequentially, not in
+parallel**: **#10 → #55 → #56**. #10's job-timeout path and #55's cancel both
+build on the same cancel-drain deadline / force-destroy machinery — whichever
+lands first builds it, the others reuse it, so isolated-worktree parallelism
+would collide. **#10 is not fire-and-forget**: it is the designated
+failure-mode-analysis slice — David drafts the happy path + FMA, Claude attacks
+it (`/grill-with-prd`), then implementation follows. Optional fillers at any
+point, lowest priority: #15 (theme script refactor), #16 (User timestamps).
 
 ## Binding design context
 
@@ -143,6 +151,6 @@ For each issue, in DAG order:
 
 ## Done
 
-Issues #4–#11 closed, all PRs merged by the human, e2e smoke from #6
-still green on `main`. Final act: post a summary comment on PRD #1 — what
-shipped and known deviations.
+Issues #10, #55, #56 closed (#11 closes with them as the tracking parent), all
+PRs merged by the human, e2e smoke from #6 still green on `main`. Final act: post a
+summary comment on PRD #1 — what shipped and known deviations.
