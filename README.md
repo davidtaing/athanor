@@ -2,6 +2,7 @@
 
 CI-as-a-service control plane and runners, built as a learning project. See
 `CLAUDE.md` for the architecture and `CONTEXT.md` for the domain glossary.
+New here? `docs/READING-PATH.md` is the ordered tour of the design docs.
 
 ## Layout
 
