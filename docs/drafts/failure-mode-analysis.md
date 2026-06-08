@@ -295,6 +295,53 @@ For a failure-handling slice (the #10 pattern):
 
 ---
 
+## 12. FMA is your test plan (the hand-off to TDD)
+
+The worksheet (§8) is not only a design artifact — it **is a test backlog**,
+already enumerated and prioritised. Its last column is literally `test`, and the
+resolution bar (§6) refuses to call a mode "handled" until you can name that
+test. So by the time the analysis is done, the test list already exists; you
+don't invent tests while implementing, you work a pre-designed list.
+
+The mapping is mechanical:
+
+- **happy-path steps** → happy-path / integration tests
+- **each non-`accept` failure mode** → one test asserting its *intended
+  behaviour* at its *enforcement point*
+- **`accept` dispositions** → no test, but a recorded note of the gap (don't let
+  the silence read as coverage)
+
+This closes TDD's real blind spot. TDD gives you the *rhythm* — red → green →
+refactor, test-first — but it never tells you *which* tests to write. Left to
+instinct, suites skew happy-path-heavy, because people don't enumerate failures
+(the §10 trap again). FMA front-loads failure-mode breadth *before* a line of
+test code, so the suite comes out balanced.
+
+> **FMA answers *what / where / why* to test. TDD is the rhythm of *building
+> to* those tests.** They compose; neither replaces the other.
+
+The sharpest contribution is the **vantage point**, not just the list. The
+enforcement-point rule (§6, §10) says a failure must be caught somewhere that
+*survives* the failure — and that is exactly where the test must assert from. A
+`runner_lost` test that watches the Channel is worthless: the Channel is the
+thing that died. FMA steers you to assert it **from the sweep / the DB row**, not
+the dead process — the difference between a failure test that passes for the
+wrong reason and one that actually proves recovery.
+
+So the slice pipeline (§11) is one continuous artifact transforming:
+
+```text
+happy path + FMA worksheet
+  → acceptance criteria  (one per resolved mode)
+  → red tests            (/tdd, at the named seam, fake collaborator, shortened timeouts)
+  → green
+```
+
+By the time you implement, the failing tests are already designed — `/tdd` is the
+obvious next move, not a step to remember. Issue #10's acceptance criteria *are*
+this list: each already names its seam ("the Channel seam with the fake
+Provisioner and shortened test timeouts"), so they drop straight in as red tests.
+
 ## Related
 
 - `docs/adr/0001-runner-communication-phoenix-channels.md` — connection loss as
