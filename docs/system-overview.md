@@ -1,9 +1,9 @@
 # System overview
 
-How a Pipeline flows through Athanor end to end. This is the synthesis the
-ADRs and the supervision-tree doc describe one decision at a time — read it
-first for the whole picture, then follow the pointers for the *why* behind any
-step.
+This document traces how a Pipeline flows through Athanor end to end. It is the
+synthesis that the ADRs and the supervision-tree doc give one decision at a
+time — read it first for the whole picture, then follow the pointers for the
+*why* behind any step.
 
 Terms (Pipeline, Job, Runner, Provisioner, Boot Token, …) are defined in
 [`../CONTEXT.md`](../CONTEXT.md). The wire-level contract is in
