@@ -2,6 +2,10 @@ name: CI
 
 on:
   pull_request:
+    # Defaults are opened/synchronize/reopened; add ready_for_review so CI
+    # fires the moment a draft is promoted (the draft gate below skips it
+    # until then).
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -23,6 +27,10 @@ jobs:
   # satisfiable on docs-only PRs.
   changes:
     name: changes
+    # Skip CI on draft PRs (they can't be merged, so required checks aren't
+    # enforced). Pushes have no pull_request payload, so the first clause keeps
+    # them running. Every other job needs: changes, so gating here gates all.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     outputs:
       control-plane: ${{ steps.filter.outputs.control-plane }}
