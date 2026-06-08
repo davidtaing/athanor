@@ -151,6 +151,6 @@ For each issue, in DAG order:
 
 ## Done
 
-#10, #55, #56 closed (#11 closes with them as the tracking parent), all PRs
-merged by the human, e2e smoke from #6 still green on `main`. Final act: post a
+Issues #10, #55, #56 closed (#11 closes with them as the tracking parent), all
+PRs merged by the human, e2e smoke from #6 still green on `main`. Final act: post a
 summary comment on PRD #1 — what shipped and known deviations.
