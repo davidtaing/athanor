@@ -119,6 +119,24 @@ Steps and `env` are validated at **Definition submission** (the Pipeline
 create-action), before any Runner boots — never inside a booted Runner. By the
 time a Step reaches `job:assign` it is already a well-formed object.
 
+**Invariant — the Step subprocess environment is explicitly constructed.** A
+Step process's environment is built from the Definition's declared `env` (plus a
+minimal legitimate base), and **never inherited from the Runner process**. The
+Runner's own bootstrap/auth variables (`ATHANOR_BOOT_TOKEN`, `ATHANOR_RUNNER_ID`,
+`ATHANOR_CONTROL_PLANE_URL`, and any future Runner-held credential) must not
+appear in a Step's environment. This generalizes `runner-auth-prior-art.md`
+finding #2 into a standing policy and is the precondition for any future
+file-over-env secret delivery (`docs/research/secrets-management.md`, §4).
+
+> **Deviation (Step env inherited, declared `env` not applied).** As built the
+> invariant above is **not** honored. `ShellRunner.RunStep`
+> (`runner/internal/executor/shell.go`) sets no `cmd.Env`, so the Step inherits
+> the Runner's full OS environment — including the provisioner-injected
+> `ATHANOR_BOOT_TOKEN`. Conversely `executor.Step` has no `Env` field, so the
+> `env` map the control plane sends on `job:assign` is received
+> (`assignPayload.Env`) but **never reaches the Step**. One change closes both:
+> construct `cmd.Env` explicitly from the declared `env`. (Issue #82.)
+
 ## Join and rejoin
 
 ### First join (built)
@@ -362,6 +380,9 @@ time of writing:
    it; the control plane reads only `exit_code`.
 4. **`log:chunk` and `job:cancel` are unbuilt** — present in the PRD catalog,
    absent from both sides of the wire. (Issues #8 / #11.)
+5. **Step environment is inherited, not constructed.** `cmd.Env` is unset, so
+   Steps inherit the Runner's environment (leaking `ATHANOR_BOOT_TOKEN`), while
+   the declared `env` map is received but never applied to the Step. (Issue #82.)
 
 These are recorded as findings, not silently reconciled.
 
