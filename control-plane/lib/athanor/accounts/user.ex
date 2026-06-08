@@ -257,6 +257,9 @@ defmodule Athanor.Accounts.User do
     end
 
     attribute :confirmed_at, :utc_datetime_usec
+
+    create_timestamp :created_at
+    update_timestamp :updated_at
   end
 
   relationships do
