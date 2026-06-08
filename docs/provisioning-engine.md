@@ -89,8 +89,14 @@ processes):
 - **lifecycle facts** (Runner row, boot deadline as a *column*) live in Postgres;
 - the existing **scheduler sweep** enforces the boot timeout and reaps losses.
 
-The current `Task.Supervisor` Provisioner is unchanged — it just calls
-`Backend.boot/1` instead of Docker directly.
+The Provisioner's *supervision structure* stays as is (a `Task.Supervisor`, no
+new per-box processes), and so does the *coordination* it already owns: create
+the Runner record + Boot Token, stamp the returned boot handle onto the Runner,
+enforce deadlines, fire-and-forget destroy. What changes is its *body* — instead
+of driving the Docker API directly, it translates the Job into a `Spec` (mapping
+fields, building `boot_env` from the control-plane URL + Boot Token) and calls
+`Backend.boot/1` / `Backend.destroy/1`. The Provisioner stays the Job-aware
+coordinator; the Backend stays Job-ignorant — the seam restated.
 
 ## The two places the abstraction will try to leak
 
