@@ -23,6 +23,24 @@ worktree isolation, which may nest under `.claude/` or a temp dir) coexist
 fine: any directory name that isn't `athanor`/`athanor-wt<1-3>` gets a
 sanitized worktree name and a hashed port in 4100–4999 (see below).
 
+## Session handoffs (`~/athanor-handoffs/`)
+
+A fourth sibling, **outside git**, holds session handoff prompts shared across
+all worktrees:
+
+```text
+~/athanor-handoffs # session handoff prompts (durable, not version-controlled)
+```
+
+Handoffs live here rather than in a worktree's working tree (a `HANDOFF.md` is
+stuck in one slot and can't be picked up from another) or `/tmp` (does not
+survive the runner host's overnight power-off). They are ephemeral session
+artifacts, not project docs, so they stay out of git. Convention: one
+`YYYY-MM-DD-topic.md` per handoff, accumulating as a journal; the newest is the
+active one (`ls -t ~/athanor-handoffs/*.md | head -1`). See that directory's
+`README.md`. The `/handoff` skill produces the content — save it there instead
+of the skill's `/tmp` default.
+
 ## Per-worktree environment (implemented)
 
 Three shared resources are isolated per worktree, driven by three env vars:
