@@ -1,45 +1,44 @@
 defmodule Athanor.Provisioner.Faulty do
   @moduledoc """
-  Test-only Provisioner that injects a boot fault for the Job whose id matches a
-  configured marker, delegating every other call to `Athanor.Provisioner.Fake`.
-  Two independent faults, each keyed on its own marker:
+  Test-only Provisioner that injects a boot fault based on the booting Job's
+  `image`, delegating every other call to `Athanor.Provisioner.Fake`. Two faults,
+  each keyed on a sentinel image value:
 
-    * `:faulty_provisioner_raise_job_id` — `boot/1` *raises* (a Provisioner crash
-      / data-layer error that escapes as an exception).
-    * `:faulty_provisioner_error_job_id` — `boot/1` returns `{:error, _}` (a fault
-      surfaced as a value).
+    * `"fault:boot-raise"` — `boot/1` *raises* (a Provisioner crash / data-layer
+      error that escapes as an exception).
+    * `"fault:boot-error"` — `boot/1` returns `{:error, _}` (a fault surfaced as a
+      value).
 
-  One provisioner reading *both* markers — rather than two provisioners each
-  shadowing the other — is what makes the `:athanor, :provisioner` config swap
-  safe across `async: true` tests: whichever test installs `Faulty`, every test's
-  own marker is still honored, and a non-matching Job id simply delegates to the
-  Fake. The markers are Job *ids* (globally unique UUIDs) so a swap can never make
-  a concurrent test's own boot fault. Test-support only; not started in production.
+  The fault marker lives on the **Job row** the test created, not in global app
+  config — so it is carried by the per-test, sandbox-isolated data and there is
+  nothing to mutate or restore. That makes one globally-installed `Faulty` fully
+  safe across `async: true` tests: a test's faulting Job can never trip a
+  concurrent test's boot, and there is no shared mutable marker to race on. Any
+  Job whose image isn't a `fault:` sentinel simply delegates to the Fake.
+  Test-support only; not started in production.
   """
   @behaviour Athanor.Provisioner
 
+  alias Athanor.Pipelines.Job
   alias Athanor.Provisioner.Fake
-
-  @doc "The Job id whose boot should raise, read from config."
-  def raise_on, do: Application.get_env(:athanor, :faulty_provisioner_raise_job_id)
-
-  @doc "The Job id whose boot should return `{:error, _}`, read from config."
-  def error_on, do: Application.get_env(:athanor, :faulty_provisioner_error_job_id)
 
   @impl true
   def boot(runner) do
-    cond do
-      runner.job_id == raise_on() ->
-        raise "boom: provisioner boot raised for job #{runner.job_id}"
-
-      runner.job_id == error_on() ->
-        {:error, :boot_exploded}
-
-      true ->
-        Fake.boot(runner)
+    case fault_for(runner) do
+      :raise -> raise "boom: provisioner boot raised for job #{runner.job_id}"
+      :error -> {:error, :boot_exploded}
+      :none -> Fake.boot(runner)
     end
   end
 
   @impl true
   def destroy(runner), do: Fake.destroy(runner)
+
+  defp fault_for(runner) do
+    case Ash.get(Job, runner.job_id) do
+      {:ok, %Job{image: "fault:boot-raise"}} -> :raise
+      {:ok, %Job{image: "fault:boot-error"}} -> :error
+      _ -> :none
+    end
+  end
 end

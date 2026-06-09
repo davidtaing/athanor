@@ -193,7 +193,11 @@ defmodule Athanor.SchedulerTest do
     end
 
     test "a dispatch that RAISES never aborts the pass, so a later queued Job still dispatches" do
-      pipeline = pipeline_with_jobs([job("a"), job("b")])
+      # "a"'s image is the `"fault:boot-raise"` sentinel, so the globally-installed
+      # `Faulty` Provisioner *raises* when booting it. The marker rides "a"'s row
+      # (per-test, sandbox-isolated) — no global config swap, no race with
+      # concurrent async tests.
+      pipeline = pipeline_with_jobs([%{job("a") | image: "fault:boot-raise"}, job("b")])
       jobs = Ash.load!(pipeline, :jobs).jobs
       a = Enum.find(jobs, &(&1.name == "a"))
       b = Enum.find(jobs, &(&1.name == "b"))
@@ -207,17 +211,10 @@ defmodule Athanor.SchedulerTest do
       )
       |> Ash.update!()
 
-      # Mark "a" so the test Provisioner (`Faulty`, installed globally) *raises*
-      # (not `{:error, _}`) when booting it. Were the raise to escape
-      # `dispatch_up_to/2`, the whole pass would abort and "b" would never
-      # dispatch. The marker is "a"'s job_id (a unique UUID) so it can't make a
-      # concurrent async test's boot raise — and because every test shares one
-      # globally-installed Faulty provisioner, no config swap races here. Under
-      # record-before-act "a"'s intent commits first, so the raise lands in boot
-      # and the bounded requeue path returns "a" to :queued (attempt 1).
-      Application.put_env(:athanor, :faulty_provisioner_raise_job_id, a.id)
-      on_exit(fn -> Application.delete_env(:athanor, :faulty_provisioner_raise_job_id) end)
-
+      # Were the raise to escape `dispatch_up_to/2`, the whole pass would abort and
+      # "b" would never dispatch. Under record-before-act "a"'s intent commits
+      # first, so the raise lands in boot and the bounded requeue path returns "a"
+      # to :queued (attempt 1).
       Scheduler.dispatch_queued(cap: 2)
 
       # "a"'s raise was contained (requeued back to :queued, attempt counted); "b"

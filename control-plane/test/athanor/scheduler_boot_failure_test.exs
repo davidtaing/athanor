@@ -202,17 +202,19 @@ defmodule Athanor.SchedulerBootFailureTest do
   end
 
   describe "5. synchronous boot error -> requeue / boot_failure" do
-    # Mark a Job so the globally-installed `Faulty` test Provisioner returns
-    # `{:error, _}` when booting it. Keyed on the Job's unique id, so no config
-    # swap and no interference with concurrent async tests.
-    defp mark_boot_error(job) do
-      Application.put_env(:athanor, :faulty_provisioner_error_job_id, job.id)
-      on_exit(fn -> Application.delete_env(:athanor, :faulty_provisioner_error_job_id) end)
+    # The globally-installed `Faulty` test Provisioner returns `{:error, _}` when
+    # booting a Job whose image is the `"fault:boot-error"` sentinel. The marker
+    # rides the Job row (per-test, sandbox-isolated) — no global config, nothing
+    # to restore, no race with concurrent async tests.
+    defp faulting_job(image) do
+      [j] =
+        pipeline_with_jobs([%{name: "build", image: image, steps: [%{"command" => "make"}]}]).jobs
+
+      j
     end
 
     test "a fast {:error, _} from boot drives the bounded requeue (no waiting on the deadline)" do
-      job = single_job()
-      mark_boot_error(job)
+      job = faulting_job("fault:boot-error")
 
       Scheduler.dispatch_queued()
 
@@ -225,8 +227,7 @@ defmodule Athanor.SchedulerBootFailureTest do
     end
 
     test "synchronous boot errors fail terminally with boot_failure after the ceiling" do
-      job = single_job()
-      mark_boot_error(job)
+      job = faulting_job("fault:boot-error")
 
       Scheduler.dispatch_queued()
       assert reload(job).state == :queued and reload(job).boot_attempts == 1

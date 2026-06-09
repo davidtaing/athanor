@@ -21,6 +21,15 @@ defmodule Athanor.Pipelines.Job do
     table "jobs"
     repo Athanor.Repo
 
+    # The boot-deadline sweep scans `:assigned` Jobs whose `boot_deadline_at` has
+    # passed on every ~30s pass. A partial index scoped to that predicate keeps
+    # the recovery scan off a full-table read as the jobs table grows (#10).
+    custom_indexes do
+      index [:boot_deadline_at],
+        name: "jobs_assigned_boot_deadline_idx",
+        where: "state = 'assigned' AND boot_deadline_at IS NOT NULL"
+    end
+
     # The Failure Reason is data on the single Failed state (`CONTEXT.md`); the
     # DB only ever stores NULL or one of the four canonical tokens, regardless
     # of which writer touches the row.
