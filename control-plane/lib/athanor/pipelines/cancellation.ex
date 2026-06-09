@@ -44,7 +44,7 @@ defmodule Athanor.Pipelines.Cancellation do
   def cancel_job(job_id) when is_binary(job_id) do
     case Ash.get(Job, job_id) do
       {:ok, job} -> cancel_job(job)
-      {:error, _} -> {:error, :not_found}
+      {:error, error} -> not_found_or_propagate(error)
     end
   end
 
@@ -83,10 +83,26 @@ defmodule Athanor.Pipelines.Cancellation do
 
         {:ok, canceled}
 
-      {:error, _} ->
-        {:error, :not_found}
+      {:error, error} ->
+        not_found_or_propagate(error)
     end
   end
+
+  # Only a genuine missing-record error becomes `{:error, :not_found}` (→ 404).
+  # Authorization / validation / runtime faults propagate unchanged so the
+  # FallbackController renders them as their real status (422, etc.) instead of
+  # masquerading as a 404. Mirrors the controller's own NotFound detection —
+  # direct, or nested inside an `Ash.Error.Invalid` envelope.
+  defp not_found_or_propagate(error) do
+    if not_found_error?(error), do: {:error, :not_found}, else: {:error, error}
+  end
+
+  defp not_found_error?(%Ash.Error.Query.NotFound{}), do: true
+
+  defp not_found_error?(%Ash.Error.Invalid{errors: errors}),
+    do: Enum.any?(errors, &match?(%Ash.Error.Query.NotFound{}, &1))
+
+  defp not_found_error?(_), do: false
 
   # Drive the `:cancel` transition. A Job with a Runner (`:assigned`/`:running`)
   # stamps the cancel-drain deadline and gets `job:cancel` pushed; a no-Runner
