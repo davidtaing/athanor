@@ -264,7 +264,7 @@ defmodule AthanorWeb.RunnerChannel do
 
   # Test seam: a configured Runner id forces a transient internal fault during
   # join evaluation, so the rejection-split can be exercised at the Channel seam
-  # (the `Athanor.Provisioner.Raising` precedent). Keyed on a unique Runner id so
+  # (the `Athanor.Provisioner.Faulty` precedent). Keyed on a unique Runner id so
   # the global config can never trip a different Runner's join. No-op in prod
   # (the key is unset).
   defp maybe_inject_transient_fault(runner_id) do

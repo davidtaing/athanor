@@ -1,9 +1,11 @@
 defmodule Athanor.Provisioner.Fake do
   @moduledoc """
-  Test Provisioner (MVP PRD testing seam 3). Creates a real Runner record with
-  a Boot Token for the Job — exactly as the production Provisioner would before
-  boot — but boots no container. Every `boot`/`destroy` call is recorded so a
-  test can assert call counts and read the surfaced Boot Token.
+  Test Provisioner (MVP PRD testing seam 3). The Runner record + Boot Token are
+  written by the dispatch intent transaction *before* boot (issue #10), so the
+  fake receives an already-created Runner and boots no container — it just records
+  the call so a test can assert call counts and read the surfaced Boot Token. The
+  recorded `runner` carries the same plaintext Boot Token the real driver would
+  inject into the container.
 
   Calls are recorded into a per-test `Athanor.Provisioner.Recorder` Agent,
   located through the `$callers` chain so recording works even when the call
@@ -11,22 +13,12 @@ defmodule Athanor.Provisioner.Fake do
   """
   @behaviour Athanor.Provisioner
 
-  alias Athanor.Pipelines.Runner
   alias Athanor.Provisioner.Recorder
 
   @impl true
-  def boot(job) do
-    Runner
-    |> Ash.Changeset.for_create(:boot, %{job_id: job.id})
-    |> Ash.create()
-    |> case do
-      {:ok, runner} ->
-        Recorder.record(:boot, job: job, runner: runner)
-        {:ok, runner}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  def boot(runner) do
+    Recorder.record(:boot, runner: runner, job_id: runner.job_id)
+    {:ok, runner}
   end
 
   @impl true

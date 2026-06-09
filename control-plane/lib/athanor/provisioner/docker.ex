@@ -6,10 +6,12 @@ defmodule Athanor.Provisioner.Docker do
   Boot-per-job, no warm pool, single host.
 
   Per ADR 0003 the Runner record and its one-time Boot Token are created *before*
-  the container boots; `boot/1` then creates the container with the
-  control-plane URL and Boot Token injected as environment, starts it, and
-  stamps the container id onto the Runner so `destroy/1` can remove exactly that
-  container. The Runner *is* the sandbox — there is no long-lived runner daemon.
+  the container boots; issue #10's record-before-act flip writes that row in the
+  Scheduler's dispatch intent transaction, so `boot/1` receives an already-created
+  Runner. It then creates the container with the control-plane URL and Boot Token
+  injected as environment, starts it, and stamps the container id onto the Runner
+  so `destroy/1` can remove exactly that container. The Runner *is* the sandbox —
+  there is no long-lived runner daemon.
 
   Every managed container carries the `athanor.managed=true` label and an
   `athanor.runner_id` label so leaked containers are always discoverable and
@@ -25,24 +27,25 @@ defmodule Athanor.Provisioner.Docker do
   @runner_id_label "athanor.runner_id"
 
   @impl true
-  def boot(job), do: boot(job, [])
+  def boot(runner), do: boot(runner, [])
 
   @doc """
-  Boot a Runner for the Job. Options (defaults from config) let the narrow
-  integration tests substitute a tiny image/command without a runner-image
-  build:
+  Boot a container for an already-created Runner (issue #10: the Runner row was
+  written by the dispatch intent transaction before this call). Options (defaults
+  from config) let the narrow integration tests substitute a tiny image/command
+  without a runner-image build:
 
     * `:image` — container image (default: configured runner image)
     * `:command` — override the entrypoint command (default: the image's own)
   """
-  def boot(job, opts) do
-    with {:ok, runner} <- create_runner(job),
-         {:ok, container_id} <- create_container(runner, opts),
+  def boot(%Runner{} = runner, opts) do
+    with {:ok, container_id} <- create_container(runner, opts),
          {:ok, runner} <- start_and_record_container(runner, container_id) do
       {:ok, runner}
     else
       {:error, reason} = error ->
-        Logger.error("docker provisioner boot failed for job #{job.id}: #{inspect(reason)}")
+        Logger.error("docker provisioner boot failed for runner #{runner.id}: #{inspect(reason)}")
+
         error
     end
   end
@@ -75,12 +78,6 @@ defmodule Athanor.Provisioner.Docker do
   end
 
   # --- internals ---
-
-  defp create_runner(job) do
-    Runner
-    |> Ash.Changeset.for_create(:boot, %{job_id: job.id})
-    |> Ash.create()
-  end
 
   # The container is created but not yet started, and its id isn't persisted on
   # the Runner yet. If starting or recording fails here, `destroy/1` would no-op

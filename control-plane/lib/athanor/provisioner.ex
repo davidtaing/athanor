@@ -6,20 +6,23 @@ defmodule Athanor.Provisioner do
   driver talks to the Docker Engine API; tests use a fake that records calls
   and surfaces tokens (MVP PRD testing seam 3).
 
-  Per ADR 0003 the Provisioner creates the Runner record and its one-time Boot
-  Token *before* booting the container, then boots. Here `boot/1` returns the
-  created Runner (carrying its plaintext Boot Token) so the booting layer can
-  inject the token into the container.
+  Per ADR 0003 the Runner record and its one-time Boot Token are created *before*
+  the container boots. Issue #10's record-before-act flip moves that record write
+  into the Scheduler's dispatch *intent transaction* (Runner row + Boot Token +
+  `boot_deadline_at` + Job `:assign`, atomically) — so by the time `boot/1` runs
+  the Runner already exists, and `boot/1` performs only the irreversible external
+  action: create + start the container, then stamp its `container_id`. The Runner
+  carries its plaintext Boot Token for injection.
   """
 
-  alias Athanor.Pipelines.Job
   alias Athanor.Pipelines.Runner
 
   @doc """
-  Boot a Runner for the given Job: create its Runner record + Boot Token, then
-  boot the container. Returns the created Runner.
+  Boot a container for an already-created Runner (the dispatch intent transaction
+  wrote the Runner row first, issue #10). Creates + starts the container with the
+  Runner's Boot Token injected, stamps `container_id`, and returns the Runner.
   """
-  @callback boot(Job.t()) :: {:ok, Runner.t()} | {:error, term()}
+  @callback boot(Runner.t()) :: {:ok, Runner.t()} | {:error, term()}
 
   @doc """
   Destroy the Runner (force-destroy the container).
@@ -34,6 +37,6 @@ defmodule Athanor.Provisioner do
     Application.get_env(:athanor, :provisioner, Athanor.Provisioner.Fake)
   end
 
-  def boot(%Job{} = job), do: impl().boot(job)
+  def boot(%Runner{} = runner), do: impl().boot(runner)
   def destroy(%Runner{} = runner), do: impl().destroy(runner)
 end

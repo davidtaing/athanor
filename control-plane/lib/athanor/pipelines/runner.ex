@@ -27,7 +27,7 @@ defmodule Athanor.Pipelines.Runner do
   end
 
   actions do
-    defaults [:read, :update]
+    defaults [:read, :update, :destroy]
 
     # Created by the Provisioner before boot, for a specific Job. Generates a
     # single-use, short-lived Boot Token; the caller injects it into the
