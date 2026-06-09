@@ -22,6 +22,16 @@ defmodule AthanorWeb.FallbackController do
 
   def call(conn, {:error, :not_found}), do: not_found(conn)
 
+  # Cancel of an already-terminal Job (issue #55): the `:cancel` transition is
+  # rejected, surfaced as a 409 Conflict. Not an error against any Runner — the
+  # Job already reached its verdict; this just tells the caller the cancel was a
+  # no-op on a settled Job.
+  def call(conn, {:error, :already_terminal}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "already_terminal"})
+  end
+
   defp not_found(conn) do
     conn
     |> put_status(:not_found)

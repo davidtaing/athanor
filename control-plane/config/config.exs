@@ -86,6 +86,13 @@ config :athanor, :scheduler_sweep_interval, :timer.seconds(30)
 # boot timeout would reject legitimate late joins the sweep would still accept.
 config :athanor, :boot_timeout, :timer.seconds(60)
 
+# Cancel-drain deadline (issue #55, runner-protocol PRD config table): from the
+# `job:cancel` push to the deadline after which the Provisioner force-destroys
+# the container regardless. There is no cancel ack on the wire (invariant 5), so
+# this deadline — a column the sweep enforces, not an in-memory timer — is the
+# control plane's only guarantee that a Runner ignoring the push is still reaped.
+config :athanor, :cancel_drain_deadline, :timer.seconds(10)
+
 # Configure the endpoint
 config :athanor, AthanorWeb.Endpoint,
   url: [host: "localhost"],

@@ -14,6 +14,12 @@ config :athanor, token_signing_secret: "jPjvNXmKjiBTLF2mhI7iaEoXVdbbUJIk"
 # unique Job id, and a non-matching id just delegates to the Fake.
 config :athanor, :provisioner, Athanor.Provisioner.Faulty
 
+# Cancel-drain deadline shortened for tests (issue #55). Tests assert the
+# force-destroy from the *row via the sweep*, stamping a past drain deadline
+# rather than sleeping; this short default just keeps a freshly-stamped deadline
+# from lingering when a test does drive the live path.
+config :athanor, :cancel_drain_deadline, 50
+
 # MVP static bearer token for tests (avoids Application.put_env in async tests).
 config :athanor, :api_token, "test-bearer-token"
 config :bcrypt_elixir, log_rounds: 1

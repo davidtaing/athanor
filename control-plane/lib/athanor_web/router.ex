@@ -41,7 +41,9 @@ defmodule AthanorWeb.Router do
 
     post "/pipelines", PipelineController, :create
     get "/pipelines/:id", PipelineController, :show
+    post "/pipelines/:id/cancel", PipelineController, :cancel
     get "/jobs/:id", JobController, :show
+    post "/jobs/:id/cancel", JobController, :cancel
     get "/jobs/:id/logs", LogController, :show
   end
 

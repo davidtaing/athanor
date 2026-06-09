@@ -129,6 +129,52 @@ defmodule Athanor.Scheduler do
       {:error, %{job_id: job.id, reason: {:raised, exception}}}
   end
 
+  @doc """
+  Enforce expired cancel-drain deadlines (issue #55). Finds `:canceled` Jobs
+  whose `cancel_drain_deadline_at` has passed — a Runner that ignored (or never
+  received) the `job:cancel` push, since the protocol carries no cancel ack
+  (invariant 5) — and **force-destroys the container regardless**, then clears
+  the deadline so the Job is never reaped twice.
+
+  This reuses the #10 boot-failure force-destroy seam: the Job is already
+  terminal (canceled at the API call, ADR 0002), so there is no state transition
+  to drive here — only the cleanup the deadline guarantees. The cancel-drain
+  deadline is a column, not an in-memory timer, so a control-plane restart still
+  reaps the container (the same restart-durability the boot sweep has). The
+  public pass the periodic sweep runs and tests drive directly. Returns a
+  per-Job `{:reaped, job_id}` list.
+  """
+  def sweep_cancel_drain_deadlines do
+    Job
+    |> Ash.Query.filter(state == :canceled and not is_nil(cancel_drain_deadline_at))
+    |> Ash.Query.filter(cancel_drain_deadline_at < ^DateTime.utc_now())
+    |> Ash.read!()
+    |> Enum.map(&reap_expired_cancel/1)
+  end
+
+  # One canceled Job past its drain deadline: force-destroy its container, drop
+  # the Runner row, and retire the deadline. Isolated so one bad row never aborts
+  # the rest of the sweep (the singleton survives every pass). The Job stays
+  # canceled either way — this is cleanup, not a verdict.
+  defp reap_expired_cancel(job) do
+    runner = runner_for(job)
+    reap_container(runner)
+    drop_runner(runner)
+
+    job
+    |> Ash.Changeset.for_update(:clear_cancel_drain_deadline)
+    |> Ash.update!()
+
+    {:reaped, job.id}
+  rescue
+    exception ->
+      Logger.error(
+        "scheduler cancel-drain sweep failed for job #{job.id}: #{Exception.message(exception)}"
+      )
+
+      {:error, %{job_id: job.id, reason: {:raised, exception}}}
+  end
+
   # The shared boot-failure driver, run from both the synchronous boot-error path
   # and the deadline sweep (issue #10): force-destroy the container if one is
   # known, drop the failed Runner row, then `:requeue` while under the attempts
@@ -325,6 +371,10 @@ defmodule Athanor.Scheduler do
     # Job to `:queued` and frees a slot the same pass can then re-dispatch into
     # (issue #10). Both halves are wrapped so neither can crash the singleton.
     safe(&sweep_boot_deadlines/0)
+    # Enforce expired cancel-drain deadlines: force-destroy the containers of
+    # canceled Jobs whose Runner ignored `job:cancel` (issue #55). Independent of
+    # dispatch and wrapped so it can never crash the singleton.
+    safe(&sweep_cancel_drain_deadlines/0)
     safe(fn -> dispatch_queued() end)
     schedule_sweep()
     {:noreply, state}

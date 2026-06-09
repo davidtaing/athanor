@@ -9,6 +9,7 @@ defmodule Athanor.Pipelines do
   """
   use Ash.Domain, otp_app: :athanor, extensions: [AshAdmin.Domain]
 
+  alias Athanor.Pipelines.Cancellation
   alias Athanor.Pipelines.DagAdvance
 
   admin do
@@ -21,6 +22,19 @@ defmodule Athanor.Pipelines do
   Delegates to `Athanor.Pipelines.DagAdvance`; see its docs for the rules.
   """
   defdelegate advance(job), to: DagAdvance
+
+  @doc """
+  Cancel a single Job (issue #55): transactional `:cancel` transition, a
+  `job:cancel` push if a Runner is attached, and a DAG skip of its dependents.
+  Delegates to `Athanor.Pipelines.Cancellation`; see its docs.
+  """
+  defdelegate cancel_job(job), to: Cancellation
+
+  @doc """
+  Cancel every non-terminal Job in a Pipeline in one call (issue #55).
+  Delegates to `Athanor.Pipelines.Cancellation`; see its docs.
+  """
+  defdelegate cancel_pipeline(pipeline_id), to: Cancellation
 
   resources do
     resource Athanor.Pipelines.Pipeline do

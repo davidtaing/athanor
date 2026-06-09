@@ -30,4 +30,17 @@ defmodule AthanorWeb.PipelineController do
       render(conn, :show, pipeline: pipeline)
     end
   end
+
+  @doc """
+  Cancel a whole Pipeline (issue #55): cancels every non-terminal Job in one
+  call. Already-terminal Jobs are skipped over, never errored. Returns the
+  Pipeline with its updated rollup status and per-Job states (the canceled Jobs
+  now `:canceled`, their dependents `:skipped`). Unknown id ⇒ 404.
+  """
+  def cancel(conn, %{"id" => id}) do
+    with {:ok, _count} <- Pipelines.cancel_pipeline(id),
+         {:ok, pipeline} <- Pipelines.get_pipeline(id, load: [:jobs, :status]) do
+      render(conn, :show, pipeline: pipeline)
+    end
+  end
 end
