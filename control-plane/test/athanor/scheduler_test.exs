@@ -207,26 +207,16 @@ defmodule Athanor.SchedulerTest do
       )
       |> Ash.update!()
 
-      # Swap in a Provisioner that *raises* (not `{:error, _}`) when booting "a".
-      # Were the raise to escape `dispatch_up_to/2`, the whole pass would abort
-      # and "b" would never dispatch. The marker is "a"'s job_id (a unique UUID)
-      # so this global config swap can't make a concurrent async test's boot raise.
-      # Under record-before-act "a"'s intent commits first, so the raise lands in
-      # boot and the bounded requeue path returns "a" to :queued (attempt 1).
-      prev_provisioner = Application.get_env(:athanor, :provisioner)
-      prev_job_id = Application.get_env(:athanor, :raising_provisioner_job_id)
-      Application.put_env(:athanor, :provisioner, Athanor.Provisioner.Raising)
-      Application.put_env(:athanor, :raising_provisioner_job_id, a.id)
-
-      on_exit(fn ->
-        restore = fn
-          key, nil -> Application.delete_env(:athanor, key)
-          key, value -> Application.put_env(:athanor, key, value)
-        end
-
-        restore.(:provisioner, prev_provisioner)
-        restore.(:raising_provisioner_job_id, prev_job_id)
-      end)
+      # Mark "a" so the test Provisioner (`Faulty`, installed globally) *raises*
+      # (not `{:error, _}`) when booting it. Were the raise to escape
+      # `dispatch_up_to/2`, the whole pass would abort and "b" would never
+      # dispatch. The marker is "a"'s job_id (a unique UUID) so it can't make a
+      # concurrent async test's boot raise — and because every test shares one
+      # globally-installed Faulty provisioner, no config swap races here. Under
+      # record-before-act "a"'s intent commits first, so the raise lands in boot
+      # and the bounded requeue path returns "a" to :queued (attempt 1).
+      Application.put_env(:athanor, :faulty_provisioner_raise_job_id, a.id)
+      on_exit(fn -> Application.delete_env(:athanor, :faulty_provisioner_raise_job_id) end)
 
       Scheduler.dispatch_queued(cap: 2)
 

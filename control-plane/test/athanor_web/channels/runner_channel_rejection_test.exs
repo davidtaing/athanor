@@ -9,7 +9,7 @@ defmodule AthanorWeb.RunnerChannelRejectionTest do
       the boot timeout bounds the total. Never laundered into a credential error.
 
   Run non-async: the transient-fault injection is a global config seam keyed on a
-  unique Runner id (the `Athanor.Provisioner.Raising` precedent), and these tests
+  unique Runner id (the `Athanor.Provisioner.Faulty` precedent), and these tests
   set/reset it.
   """
   use AthanorWeb.ChannelCase, async: false

@@ -202,27 +202,17 @@ defmodule Athanor.SchedulerBootFailureTest do
   end
 
   describe "5. synchronous boot error -> requeue / boot_failure" do
-    setup do
-      prev = Application.get_env(:athanor, :provisioner)
-      prev_id = Application.get_env(:athanor, :erroring_provisioner_job_id)
-      Application.put_env(:athanor, :provisioner, Athanor.Provisioner.Erroring)
-
-      on_exit(fn ->
-        restore = fn
-          key, nil -> Application.delete_env(:athanor, key)
-          key, v -> Application.put_env(:athanor, key, v)
-        end
-
-        restore.(:provisioner, prev)
-        restore.(:erroring_provisioner_job_id, prev_id)
-      end)
-
-      :ok
+    # Mark a Job so the globally-installed `Faulty` test Provisioner returns
+    # `{:error, _}` when booting it. Keyed on the Job's unique id, so no config
+    # swap and no interference with concurrent async tests.
+    defp mark_boot_error(job) do
+      Application.put_env(:athanor, :faulty_provisioner_error_job_id, job.id)
+      on_exit(fn -> Application.delete_env(:athanor, :faulty_provisioner_error_job_id) end)
     end
 
     test "a fast {:error, _} from boot drives the bounded requeue (no waiting on the deadline)" do
       job = single_job()
-      Application.put_env(:athanor, :erroring_provisioner_job_id, job.id)
+      mark_boot_error(job)
 
       Scheduler.dispatch_queued()
 
@@ -236,7 +226,7 @@ defmodule Athanor.SchedulerBootFailureTest do
 
     test "synchronous boot errors fail terminally with boot_failure after the ceiling" do
       job = single_job()
-      Application.put_env(:athanor, :erroring_provisioner_job_id, job.id)
+      mark_boot_error(job)
 
       Scheduler.dispatch_queued()
       assert reload(job).state == :queued and reload(job).boot_attempts == 1
