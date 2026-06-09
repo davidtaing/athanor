@@ -28,6 +28,15 @@ defmodule Athanor.Pipelines.Job do
       index [:boot_deadline_at],
         name: "jobs_assigned_boot_deadline_idx",
         where: "state = 'assigned' AND boot_deadline_at IS NOT NULL"
+
+      # The cancel-drain sweep scans `:canceled` Jobs whose `cancel_drain_deadline_at`
+      # has passed on every pass — a Runner that ignored (or never received) the
+      # `job:cancel` push, whose container must be force-destroyed regardless (#55).
+      # A partial index scoped to that predicate keeps the scan off a full-table
+      # read; the column is cleared once reaped, so the index stays tiny.
+      index [:cancel_drain_deadline_at],
+        name: "jobs_canceled_drain_deadline_idx",
+        where: "state = 'canceled' AND cancel_drain_deadline_at IS NOT NULL"
     end
 
     # The Failure Reason is data on the single Failed state (`CONTEXT.md`); the
@@ -175,7 +184,33 @@ defmodule Athanor.Pipelines.Job do
     end
 
     update :cancel do
+      # User-initiated stop, reachable from any non-terminal state (`CONTEXT.md`):
+      # Canceled is distinct from Skipped (the system's verdict) and Failed (the
+      # execution verdict). The transition commits transactionally at the API call
+      # (ADR 0002) — the Job *is* canceled the moment this commits; any Runner
+      # compliance is cleanup, not the cancellation itself (issue #55).
+      #
+      # The caller stamps `cancel_drain_deadline_at` only when a Runner is attached
+      # (an `:assigned`/`:running` Job got `job:cancel` pushed): the cancel-drain
+      # sweep force-destroys that container once the deadline passes, since the
+      # protocol carries no cancel ack (invariant 5). A no-Runner cancel
+      # (`:waiting`/`:queued`) leaves it nil — there is nothing to reap.
+      argument :cancel_drain_deadline_at, :utc_datetime_usec, allow_nil?: true
+
+      change set_attribute(:cancel_drain_deadline_at, arg(:cancel_drain_deadline_at))
+      # A canceled Job holds no live boot deadline — clear it so the boot sweep's
+      # `:assigned AND boot_deadline_at < now()` query can never re-touch a canceled
+      # row (mirrors :fail; issue #10/#55).
+      change set_attribute(:boot_deadline_at, nil)
       change transition_state(:canceled)
+    end
+
+    # Clear the cancel-drain deadline once the container has been force-destroyed,
+    # so the cancel-drain sweep never re-reaps the same canceled Job (issue #55).
+    # No state transition — the Job is already terminal; this only retires the
+    # deadline column the sweep scans on.
+    update :clear_cancel_drain_deadline do
+      change set_attribute(:cancel_drain_deadline_at, nil)
     end
   end
 
@@ -219,6 +254,15 @@ defmodule Athanor.Pipelines.Job do
     # finds `:assigned` Jobs past this and drives `:requeue`/`:fail`. nil unless
     # assigned-and-not-yet-joined; cleared back to nil when the Job leaves boot.
     attribute :boot_deadline_at, :utc_datetime_usec, allow_nil?: true
+
+    # Cancel-drain deadline for a `:canceled` Job that had a Runner (issue #55).
+    # Stamped in the cancel transaction when `job:cancel` is pushed to an
+    # `:assigned`/`:running` Job's Channel; the cancel-drain sweep finds `:canceled`
+    # Jobs past this and force-destroys the container regardless (the protocol
+    # carries no cancel ack — invariant 5). A column, not an in-memory timer, so a
+    # control-plane restart still reaps the container (ADR 0002). nil for a
+    # no-Runner cancel (`:waiting`/`:queued`); cleared once the container is reaped.
+    attribute :cancel_drain_deadline_at, :utc_datetime_usec, allow_nil?: true
 
     # How many times this Job has been dispatched and timed out / failed to boot
     # (issue #10). The boot-attempts ceiling (3) bounds starvation: a poison Job
