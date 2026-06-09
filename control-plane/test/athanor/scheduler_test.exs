@@ -39,8 +39,8 @@ defmodule Athanor.SchedulerTest do
     [assigned] = Ash.load!(pipeline, :jobs, reuse_values?: false).jobs
     assert assigned.state == :assigned
 
-    assert [{:boot, %{job: booted}}] = Recorder.calls(:boot)
-    assert booted.id == assigned.id
+    assert [{:boot, %{job_id: booted_job_id}}] = Recorder.calls(:boot)
+    assert booted_job_id == assigned.id
   end
 
   test "boots one Runner per queued Job, none for waiting Jobs" do
@@ -149,7 +149,8 @@ defmodule Athanor.SchedulerTest do
 
       Scheduler.dispatch_queued(cap: 1)
 
-      assert [{:boot, %{job: booted}}] = Recorder.calls(:boot)
+      assert [{:boot, %{job_id: booted_job_id}}] = Recorder.calls(:boot)
+      booted = Enum.find(jobs, &(&1.id == booted_job_id))
       assert booted.name == "c"
     end
 
@@ -170,8 +171,9 @@ defmodule Athanor.SchedulerTest do
         |> Ash.update!()
 
       # Make "a" (the oldest queued Job) dispatch fail: pre-create a Runner for
-      # it so the Provisioner's boot violates the unique_job index. No prod code
-      # changes — the failure rides the real data-layer constraint.
+      # it so the intent transaction's Runner create violates the unique_job
+      # index. No prod code changes — the failure rides the real data-layer
+      # constraint, and the transaction rolls back so "a" stays queued.
       Runner
       |> Ash.Changeset.for_create(:boot, %{job_id: a.id})
       |> Ash.create!()
@@ -179,15 +181,15 @@ defmodule Athanor.SchedulerTest do
       # Cap 1: were the failed oldest Job to consume the slot, "b" would starve.
       Scheduler.dispatch_queued(cap: 1)
 
-      # "a" stays queued (recovery is out of scope), "b" dispatches into the slot.
+      # "a" stays queued (the intent rolled back), "b" dispatches into the slot.
       jobs = Ash.load!(pipeline, :jobs, reuse_values?: false).jobs
       assert Enum.find(jobs, &(&1.name == "a")).state == :queued
       assert Enum.find(jobs, &(&1.name == "b")).state == :assigned
 
       # The only successful boot is "b" — the pre-created Runner is not a boot
       # call recorded by the fake.
-      assert [{:boot, %{job: booted}}] = Recorder.calls(:boot)
-      assert booted.id == b.id
+      assert [{:boot, %{job_id: booted_job_id}}] = Recorder.calls(:boot)
+      assert booted_job_id == b.id
     end
 
     test "a dispatch that RAISES never aborts the pass, so a later queued Job still dispatches" do
@@ -207,8 +209,10 @@ defmodule Athanor.SchedulerTest do
 
       # Swap in a Provisioner that *raises* (not `{:error, _}`) when booting "a".
       # Were the raise to escape `dispatch_up_to/2`, the whole pass would abort
-      # and "b" would never dispatch. The marker is "a"'s id (a unique UUID) so
-      # this global config swap can't make a concurrent async test's boot raise.
+      # and "b" would never dispatch. The marker is "a"'s job_id (a unique UUID)
+      # so this global config swap can't make a concurrent async test's boot raise.
+      # Under record-before-act "a"'s intent commits first, so the raise lands in
+      # boot and the bounded requeue path returns "a" to :queued (attempt 1).
       prev_provisioner = Application.get_env(:athanor, :provisioner)
       prev_job_id = Application.get_env(:athanor, :raising_provisioner_job_id)
       Application.put_env(:athanor, :provisioner, Athanor.Provisioner.Raising)
@@ -226,13 +230,16 @@ defmodule Athanor.SchedulerTest do
 
       Scheduler.dispatch_queued(cap: 2)
 
-      # "a"'s raise was contained; "b" still dispatched into the open slot.
+      # "a"'s raise was contained (requeued back to :queued, attempt counted); "b"
+      # still dispatched into the open slot.
       jobs = Ash.load!(pipeline, :jobs, reuse_values?: false).jobs
-      assert Enum.find(jobs, &(&1.name == "a")).state == :queued
+      a_after = Enum.find(jobs, &(&1.name == "a"))
+      assert a_after.state == :queued
+      assert a_after.boot_attempts == 1
       assert Enum.find(jobs, &(&1.name == "b")).state == :assigned
 
-      assert [{:boot, %{job: booted}}] = Recorder.calls(:boot)
-      assert booted.id == b.id
+      assert [{:boot, %{job_id: booted_job_id}}] = Recorder.calls(:boot)
+      assert booted_job_id == b.id
     end
   end
 end

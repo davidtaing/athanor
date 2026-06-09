@@ -20,11 +20,11 @@ defmodule Athanor.Provisioner.Raising do
   def raise_on, do: Application.get_env(:athanor, :raising_provisioner_job_id)
 
   @impl true
-  def boot(job) do
-    if job.id == raise_on() do
-      raise "boom: provisioner boot raised for job #{job.id}"
+  def boot(runner) do
+    if runner.job_id == raise_on() do
+      raise "boom: provisioner boot raised for job #{runner.job_id}"
     else
-      Fake.boot(job)
+      Fake.boot(runner)
     end
   end
 

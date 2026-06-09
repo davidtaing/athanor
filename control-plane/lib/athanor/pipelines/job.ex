@@ -99,6 +99,31 @@ defmodule Athanor.Pipelines.Job do
     end
 
     update :assign do
+      # The deadline default is computed from config in an anonymous change, which
+      # cannot run atomically — and dispatch already wraps this in an explicit
+      # transaction, so atomic single-statement execution buys nothing here.
+      require_atomic? false
+
+      # The boot deadline is stamped here, in the dispatch intent transaction,
+      # *before* any container is booted (issue #10, record-before-act). A crash
+      # anywhere in boot then leaves an `:assigned` row carrying a live deadline
+      # the sweep enforces — deadlines are columns, not in-memory timers. Every
+      # `:assigned` Job carries one, so the caller may supply an explicit instant
+      # (the dispatch transaction does) or fall back to `now + boot_timeout`.
+      argument :boot_deadline_at, :utc_datetime_usec, allow_nil?: true
+
+      change fn changeset, _context ->
+        deadline =
+          Ash.Changeset.get_argument(changeset, :boot_deadline_at) ||
+            DateTime.add(
+              DateTime.utc_now(),
+              Application.fetch_env!(:athanor, :boot_timeout),
+              :millisecond
+            )
+
+        Ash.Changeset.force_change_attribute(changeset, :boot_deadline_at, deadline)
+      end
+
       change transition_state(:assigned)
     end
 
@@ -119,10 +144,20 @@ defmodule Athanor.Pipelines.Job do
         constraints: [one_of: [:nonzero_exit, :timeout, :runner_lost, :boot_failure]]
 
       change set_attribute(:failure_reason, arg(:failure_reason))
+      # A terminal Job holds no live boot deadline — clear it so the sweep's
+      # `:assigned AND boot_deadline_at < now()` query can never re-touch a
+      # failed row (issue #10).
+      change set_attribute(:boot_deadline_at, nil)
       change transition_state(:failed)
     end
 
     update :requeue do
+      # Boot timed out / boot failed (issue #10): count the attempt and clear the
+      # now-stale boot deadline as the Job returns to the queue. `queued_at` is
+      # deliberately *not* re-stamped — the boot-attempts ceiling bounds
+      # starvation, so the Job keeps its place at the queue head.
+      change increment(:boot_attempts)
+      change set_attribute(:boot_deadline_at, nil)
       change transition_state(:queued)
     end
 
@@ -167,6 +202,20 @@ defmodule Athanor.Pipelines.Job do
     # `WHERE state = 'queued' ORDER BY queued_at` IS the queue
     # (docs/supervision-tree.md), so dispatch takes the oldest-queued first.
     attribute :queued_at, :utc_datetime_usec, allow_nil?: true
+
+    # Boot deadline for an `:assigned` Job (issue #10, boot-failure slice). Stamped
+    # in the dispatch intent transaction *before* any container is booted, so a
+    # crash/hang anywhere in boot leaves a row the sweep can enforce: deadlines are
+    # columns, not in-memory timers (docs/supervision-tree.md, ADR 0002). The sweep
+    # finds `:assigned` Jobs past this and drives `:requeue`/`:fail`. nil unless
+    # assigned-and-not-yet-joined; cleared back to nil when the Job leaves boot.
+    attribute :boot_deadline_at, :utc_datetime_usec, allow_nil?: true
+
+    # How many times this Job has been dispatched and timed out / failed to boot
+    # (issue #10). The boot-attempts ceiling (3) bounds starvation: a poison Job
+    # retries at most 3× then fails terminally with `boot_failure`, so a requeue
+    # can safely keep `queued_at` (no re-stamp) without starving the rest forever.
+    attribute :boot_attempts, :integer, allow_nil?: false, default: 0
 
     # The Failure Reason on a Failed Job (`CONTEXT.md`). nil unless failed.
     attribute :failure_reason, :atom,

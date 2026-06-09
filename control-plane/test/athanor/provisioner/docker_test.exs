@@ -39,12 +39,21 @@ defmodule Athanor.Provisioner.DockerTest do
       })
 
     [job] = Ash.load!(pipeline, :jobs).jobs
-    {:ok, job: job}
+
+    # Record-before-act (issue #10): the Runner row + Boot Token are written by the
+    # dispatch intent transaction *before* boot, so these tests create the Runner
+    # up front and hand it to `Docker.boot/2`, mirroring the production order.
+    runner =
+      Runner
+      |> Ash.Changeset.for_create(:boot, %{job_id: job.id})
+      |> Ash.create!()
+
+    {:ok, job: job, runner: runner}
   end
 
   describe "boot/1" do
-    test "creates a real running container carrying the runner's credentials", %{job: job} do
-      assert {:ok, runner} = Docker.boot(job, image: @test_image, command: ["sleep", "30"])
+    test "creates a real running container carrying the runner's credentials", %{runner: runner} do
+      assert {:ok, runner} = Docker.boot(runner, image: @test_image, command: ["sleep", "30"])
 
       assert is_binary(runner.container_id)
       assert byte_size(runner.container_id) > 0
@@ -62,13 +71,15 @@ defmodule Athanor.Provisioner.DockerTest do
       assert labels["athanor.runner_id"] == runner.id
     end
 
-    test "force-deletes the created container when start fails, leaking nothing", %{job: job} do
+    test "force-deletes the created container when start fails, leaking nothing", %{
+      runner: runner
+    } do
       # The container is created (201) but start fails (the entrypoint binary
       # doesn't exist), so the id is never recorded on the Runner. Without the
       # compensating force-delete the container would leak, since destroy/1
       # no-ops on the nil container_id.
       assert {:error, {:start_failed, _}} =
-               Docker.boot(job, image: @test_image, command: ["/nonexistent-athanor-binary"])
+               Docker.boot(runner, image: @test_image, command: ["/nonexistent-athanor-binary"])
 
       assert managed_container_ids() == [],
              "boot left an orphaned container after start failed"
@@ -76,18 +87,16 @@ defmodule Athanor.Provisioner.DockerTest do
   end
 
   describe "destroy/1" do
-    test "force-removes the container", %{job: job} do
-      assert {:ok, runner} = Docker.boot(job, image: @test_image, command: ["sleep", "30"])
+    test "force-removes the container", %{runner: runner} do
+      assert {:ok, runner} = Docker.boot(runner, image: @test_image, command: ["sleep", "30"])
       assert :ok = Docker.destroy(runner)
 
       assert {:error, :not_found} = inspect_container_result(runner.container_id)
     end
 
-    test "is idempotent — destroying an already-gone container succeeds", %{job: job} do
+    test "is idempotent — destroying an already-gone container succeeds", %{runner: runner} do
       runner =
-        Runner
-        |> Ash.Changeset.for_create(:boot, %{job_id: job.id})
-        |> Ash.create!()
+        runner
         |> Ash.Changeset.for_update(:record_container, %{container_id: "deadbeefdeadbeef"})
         |> Ash.update!()
 
