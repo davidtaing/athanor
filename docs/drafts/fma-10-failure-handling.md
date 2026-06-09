@@ -238,9 +238,26 @@ generalizes ([[sdlc-consolidation-parked]]).
 
 ### Step 3a — Provisioner.boot (Runner row + token + container)
 
+> **Design change surfaced here (2026-06-09 grill): flip the order to record-before-act.**
+> The happy path as traced does the irreversible thing (boot a container) *before*
+> recording it (`:assign` at 3b). That leaves the Job in `:queued` — visible to the
+> sweep — for the whole duration of the boot, so a crash mid-boot gets the Job
+> **re-dispatched → two containers run the same Job (double execution)**. Fix: commit
+> the *intent* first, in one transaction — **create Runner row + mint token + stamp
+> `boot_deadline_at` + transition `:queued → :assigned`** — *then* call Docker, *then*
+> stamp `container_id`. This merges old-3b into the front of 3a. Phase 1 of the happy
+> path above is to be rewritten to this order. Net effect: the Job leaves `:queued`
+> before any container exists, so re-dispatch is impossible *by construction*, and
+> every crash/hang during boot lands on the same `boot_deadline_at` + sweep path.
+
 | # | Failure mode (§4) | Likelihood/impact | Disposition | Intended behaviour | Enforced where | Test |
 |---|---|---|---|---|---|---|
-|   |   |   |   |   |   |   |
+| 1 | **Intent transaction fails** (§4A crash-before-commit) — the DB write of Runner row + token + deadline + `:assign` fails or the Scheduler crashes mid-write | common (DB blip) / low | tolerate | Transaction is atomic → nothing commits → Job stays `:queued`; `safe_dispatch` rescues the pass, next sweep retries. No container was created (Docker call is *after* the commit). | Scheduler `safe_dispatch` + atomicity of the single intent transaction | Inject a DB error on the intent write; assert Job still `:queued`, no Runner row, dispatch retried next pass without crashing the singleton |
+| 2 | **Crash after intent commit, before Docker create** (§4A crash-after-side-effect) | uncommon / low | detect+recover | Job is `:assigned`, deadline set, *no container*. Sweep finds expired `boot_deadline_at` → `:requeue` (bounded by `boot_attempts`) → `:fail` + `boot_failure` on exhaustion. Nothing leaked. | The **sweep**, reading `boot_deadline_at` (not the Scheduler that crashed) | Stamp `:assigned` + past deadline, run sweep, assert `:requeue`; repeat to exhaustion, assert `boot_failure` |
+| 3 | **Crash after Docker start, before `container_id` stamp** (§4A — the orphan-container gap) | uncommon / **medium** (running container we hold no handle to) | detect+recover (two reapers) | *Job:* same sweep + `boot_deadline_at` path as #2. *Container:* `container_id` is NULL so `destroy` can't touch it → the **label-sweep** (#39) lists containers by athanor label and `docker rm`s any whose Runner record is terminal/absent. | Sweep (Job row) **+** label-sweep reconciliation (#39) for the physical container | Container carrying the athanor label with NULL `container_id` + terminal Runner ⇒ label-sweep removes it; Job ⇒ as #2 |
+| 4 | **Double-dispatch / double-execution** (§4E concurrency + §4A) — the bug the old order *caused*: Job re-dispatched while a boot is in flight | was common-under-crash / **high** (ADR 0001 violation) | **prevent** | Eliminated by construction: the intent transaction moves the Job out of `:queued` *before* `Provisioner.boot` runs, so no sweep pass ever sees it as dispatchable mid-boot. | **Ordering** — `:assigned` committed before the Docker call | Crash between the intent commit and `container_id` stamp; assert exactly one Runner row reaches `:running` and the Job is never re-queued while `:assigned` with a live deadline |
+| 5 | **Docker unavailable / create fails / start fails** (§4B — the call out to the daemon fails) | common / low | detect+recover → fail-safe | `boot` returns an error; intent is already committed so the Job is `:assigned` with a deadline. On the synchronous error, drive `:requeue` immediately (bounded by `boot_attempts`); the deadline is the backstop if even that write is lost. Exhaustion → `boot_failure`. | `dispatch_job` error branch (immediate) + sweep/`boot_deadline_at` (backstop) | Fake Provisioner returns `{:error, …}`; assert `:requeue`, and `boot_failure` after `boot_attempts` exhausted |
+| 6 | **`Provisioner.boot` hangs** (§4A hangs + §4D) — Docker create/start never returns | uncommon / **high** | (a) state: detect+recover · (b) **liveness: parked → see Step 3a liveness note** | *(a) State:* covered by `boot_deadline_at` + sweep (same path as #2). *(b) Liveness:* boot is synchronous in the singleton Scheduler, so a hang **stalls dispatch for the entire queue** — distinct mode, distinct fix (Task-wrap the boot, per `supervision-tree.md`, not yet built). | (a) sweep · (b) `Task.Supervisor`-wrapped boot so a hang can't block the dispatch loop *(to design)* | (a) as #2. (b) boot that blocks; assert other `:queued` Jobs still dispatch within one sweep |
 
 ### Step 3b — Job `:queued → :assigned` (+ boot_deadline_at)
 
